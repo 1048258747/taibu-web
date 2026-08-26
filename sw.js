@@ -1,5 +1,5 @@
 // 太卜排盘 Service Worker：缓存应用外壳，支持离线使用
-const CACHE = "taibu-v3";
+const CACHE = "taibu-v5";
 const ASSETS = [
   "./",
   "./index.html",

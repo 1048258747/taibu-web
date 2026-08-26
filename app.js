@@ -128,6 +128,16 @@ const ENUM_LABELS = {
   placidus: "普拉西度制",
 };
 
+// 工具表单字段分组：提升密集表单的可扫描性
+const FIELD_GROUPS = [
+  { key: "birth", label: "出生时间", fields: ["gender", "birthYear", "birthMonth", "birthDay", "birthHour", "birthMinute", "calendarType", "isLeapMonth"] },
+  { key: "place", label: "出生地点", fields: ["birthPlace", "longitude", "latitude", "timezone"] },
+  { key: "transit", label: "流运与问题", fields: ["transitTime", "question", "houseSystem", "spreadType", "method", "mode", "numbers", "queries", "yongShenTargets"] },
+];
+
+// 表单分组序号（古籍卷目风格；用大写数字避免"一"被误读为折叠图标）
+const GROUP_NUMERALS = ["壹", "贰", "叁", "肆", "伍"];
+
 const TOOL_META = {
   bazi: { icon: "八字", tint: "#f2e7cf", ink: "#9a7b3f" },
   bazi_dayun: { icon: "运", tint: "#dce9e5", ink: "#2f6f6a" },
@@ -681,8 +691,13 @@ function renderShell(content, activeNav = "") {
     <div class="app-shell">
       <header class="topbar">
         <a class="brand" href="#/">
+          <span class="brand-seal">卜</span>
           <span class="brand-title">太卜排盘</span>
         </a>
+        <nav class="topbar-nav" aria-label="主导航">
+          <button data-action="home" class="${activeNav === "home" ? "is-active" : ""}">首页</button>
+          <button data-action="ai-settings" class="${activeNav === "ai" ? "is-active" : ""}">AI 模型</button>
+        </nav>
       </header>
       <main class="page">${content}</main>
       <nav class="bottom-nav">
@@ -1293,13 +1308,31 @@ function renderToolForm(toolName) {
 
   const properties = tool.inputSchema?.properties || {};
   const required = tool.inputSchema?.required || [];
-  const fields = Object.entries(properties)
-    .filter(([key]) => key !== "detailLevel")
-    .map(([key, schema]) => {
-      const normalizedSchema = { ...schema, required: required.includes(key) };
-      return renderField(key, normalizedSchema, toolName);
-    })
+  const groupedFields = {};
+  const ungroupedFields = [];
+  for (const [key, schema] of Object.entries(properties)) {
+    if (key === "detailLevel") continue;
+    const normalizedSchema = { ...schema, required: required.includes(key) };
+    const group = FIELD_GROUPS.find((g) => g.fields.includes(key));
+    if (group) {
+      if (!groupedFields[group.key]) groupedFields[group.key] = [];
+      groupedFields[group.key].push(renderField(key, normalizedSchema, toolName));
+    } else {
+      ungroupedFields.push(renderField(key, normalizedSchema, toolName));
+    }
+  }
+
+  const groupHtml = FIELD_GROUPS.filter((g) => groupedFields[g.key] && groupedFields[g.key].length)
+    .map(
+      (g, index) => `
+        <div class="form-group">
+          <div class="form-group-title"><span class="form-group-index" aria-hidden="true">${GROUP_NUMERALS[index] || ""}</span>${escapeHtml(g.label)}</div>
+          <div class="form-grid">${groupedFields[g.key].join("")}</div>
+        </div>
+      `
+    )
     .join("");
+  const ungroupedHtml = ungroupedFields.length ? `<div class="form-grid">${ungroupedFields.join("")}</div>` : "";
 
   const advancedFields = properties.detailLevel
     ? renderField("detailLevel", { ...properties.detailLevel, required: false }, toolName)
@@ -1349,7 +1382,7 @@ function renderToolForm(toolName) {
       </div>
       ${quickCard}
       <form class="${quickReady ? "form-panel panel is-hidden" : "form-panel panel"}" data-tool-form="${escapeHtml(toolName)}">
-        <div class="form-grid">${fields}</div>
+        ${groupHtml}${ungroupedHtml}
         <details class="details-box">
           <summary>高级设置</summary>
           <div class="form-grid" style="margin-top:10px">${advancedFields}</div>
