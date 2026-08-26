@@ -694,15 +694,30 @@ function renderShell(content, activeNav = "") {
           <span class="brand-seal">卜</span>
           <span class="brand-title">太卜排盘</span>
         </a>
-        <nav class="topbar-nav" aria-label="主导航">
-          <button data-action="home" class="${activeNav === "home" ? "is-active" : ""}">首页</button>
-          <button data-action="ai-settings" class="${activeNav === "ai" ? "is-active" : ""}">AI 模型</button>
-        </nav>
+        <div class="topbar-right">
+          <nav class="topbar-nav" aria-label="主导航">
+            <button data-action="home" class="${activeNav === "home" ? "is-active" : ""}">首页</button>
+            <button data-action="ai-settings" class="${activeNav === "ai" ? "is-active" : ""}">我的</button>
+          </nav>
+          <div class="font-menu-anchor">
+            <button class="icon-button font-toggle" data-action="font-menu" aria-haspopup="true" aria-expanded="false" aria-label="调整字号">A+</button>
+            <div class="font-menu" hidden>
+              <div class="font-menu-title">字号大小</div>
+              ${FONT_SCALES.map(
+                (s) => `
+                <button data-action="set-font" data-font="${s.id}" class="${getFontScaleId() === s.id ? "is-active" : ""}" aria-pressed="${getFontScaleId() === s.id}">
+                  <span class="font-sample font-sample-${s.id}" aria-hidden="true">字</span>${s.label}
+                </button>
+              `
+              ).join("")}
+            </div>
+          </div>
+        </div>
       </header>
       <main class="page">${content}</main>
       <nav class="bottom-nav">
         <button data-action="home" data-icon="宅" class="${activeNav === "home" ? "is-active" : ""}">首页</button>
-        <button data-action="ai-settings" data-icon="智" class="${activeNav === "ai" ? "is-active" : ""}">AI模型</button>
+        <button data-action="ai-settings" data-icon="我" class="${activeNav === "ai" ? "is-active" : ""}">我的</button>
       </nav>
     </div>
   `;
@@ -710,19 +725,38 @@ function renderShell(content, activeNav = "") {
 
 function renderHome() {
   const active = getActiveProfile();
+  const now = new Date();
+  const weekdays = ["日", "一", "二", "三", "四", "五", "六"];
+  const dateLine = `${now.getFullYear()}年${now.getMonth() + 1}月${now.getDate()}日 · 星期${weekdays[now.getDay()]}`;
   const heading = `
-    <h1 class="page-heading">今日助手</h1>
-    <p class="page-subtitle">今日报告、解梦和排盘工具都在这里。</p>
+    <div class="home-masthead">
+      <span class="home-masthead-date">${dateLine}</span>
+      <h1 class="page-heading">今日助手</h1>
+      <p class="page-subtitle">${active ? "今日报告已就绪，排盘工具随时可用。" : "先建立您的档案，即可生成今日报告并一键排盘。"}</p>
+    </div>
   `;
-  const reportReady = active ? Boolean(getDailyReportCache(active)) : false;
-  const reportEntry = `
+  const cached = active ? getDailyReportCache(active) : null;
+  const meta = cached ? extractAlmanacData(cached.report.almanac) : null;
+  const reportEntry = active
+    ? `
     <section class="panel home-report-entry">
       <div class="home-report-copy">
         <span class="home-report-label">今日</span>
         <h2>今日报告</h2>
-        <p>${active ? (reportReady ? "今日报告已生成，轻点查看。" : "今日报告待生成，轻点查看。") : "保存命主档案后可生成今日报告。"}</p>
+        ${meta && meta.ganZhi ? `<p class="home-report-meta">${escapeHtml(meta.lunarDate)} · ${escapeHtml(meta.ganZhi)}日 · 日主${escapeHtml(meta.dayMaster)}（${escapeHtml(GAN_WU_XING[meta.dayMaster] || "")}）</p>` : ""}
+        <p>${cached ? "今日报告已生成，轻点查看。" : "今日报告待生成，轻点查看。"}</p>
       </div>
-      <button class="primary-button" data-action="${active ? "report" : "profiles"}">${active ? "查看" : "选择档案"}</button>
+      <button class="primary-button" data-action="report">查看</button>
+    </section>
+  `
+    : `
+    <section class="panel home-onboard">
+      <div class="home-report-copy">
+        <span class="home-report-label">第一步</span>
+        <h2>建立您的档案</h2>
+        <p>保存出生信息后，排盘自动带入资料，每日报告也将按您的命盘生成。</p>
+      </div>
+      <button class="primary-button" data-action="ai-settings">创建档案</button>
     </section>
   `;
 
@@ -748,27 +782,8 @@ function renderHome() {
     })
     .join("");
 
-  const moreEntry = `
-    <div class="home-more">
-      <button class="home-more-item" data-action="profiles">
-        <span class="home-more-icon">册</span>
-        <span>
-          <strong>命主档案</strong>
-          <small>管理出生信息</small>
-        </span>
-      </button>
-      <button class="home-more-item" data-action="history">
-        <span class="home-more-icon">史</span>
-        <span>
-          <strong>历史记录</strong>
-          <small>查看过往排盘</small>
-        </span>
-      </button>
-    </div>
-  `;
-
   return renderShell(
-    `${heading}${reportEntry}<div class="section-heading"><h2>排盘工具</h2></div><div class="tool-grid">${cards}</div>${moreEntry}<p class="disclaimer">本工具仅供传统文化研究与娱乐参考，不构成任何决策建议。</p>`,
+    `${heading}${reportEntry}<div class="section-heading"><h2>排盘工具</h2></div><div class="tool-grid">${cards}</div><p class="disclaimer">本工具仅供传统文化研究与娱乐参考，不构成任何决策建议。</p>`,
     "home"
   );
 }
@@ -1322,43 +1337,45 @@ function renderToolForm(toolName) {
     }
   }
 
+  // 一键排盘：工具以出生信息为主输入、且已有档案时，出生信息折叠为摘要条
+  const usesBirth = Boolean(properties.birthYear);
+  const quickReady = Boolean(usesBirth && active);
+
+  // 档案齐全时隐藏出生信息分组，用摘要条展示"已带入"，只留需要输入的窗口
+  const hiddenGroups = quickReady ? ["birth", "place"] : [];
+  const visibleGroups = FIELD_GROUPS.filter((g) => groupedFields[g.key] && groupedFields[g.key].length);
+  const numeralFor = (key) => GROUP_NUMERALS[visibleGroups.filter((g) => !hiddenGroups.includes(g.key)).findIndex((g) => g.key === key)] || "";
+
   const groupHtml = FIELD_GROUPS.filter((g) => groupedFields[g.key] && groupedFields[g.key].length)
     .map(
-      (g, index) => `
-        <div class="form-group">
-          <div class="form-group-title"><span class="form-group-index" aria-hidden="true">${GROUP_NUMERALS[index] || ""}</span>${escapeHtml(g.label)}</div>
+      (g) => `
+        <div class="form-group${hiddenGroups.includes(g.key) ? " is-hidden" : ""}" data-group="${g.key}">
+          <div class="form-group-title"><span class="form-group-index" aria-hidden="true">${numeralFor(g.key)}</span>${escapeHtml(g.label)}</div>
           <div class="form-grid">${groupedFields[g.key].join("")}</div>
         </div>
       `
     )
     .join("");
+
+  const prefillBar = quickReady
+    ? `
+      <div class="profile-prefill" data-prefill-bar>
+        <div class="profile-prefill-info">
+          <span class="profile-prefill-label">已带入</span>
+          <strong>${escapeHtml(active.name)}</strong>
+          <span>${active.gender === "female" ? "女" : "男"} · ${active.calendarType === "lunar" ? "农历" : "公历"}${active.birthYear}年${active.birthMonth}月${active.birthDay}日 ${active.birthHour}时${active.birthPlace ? ` · ${escapeHtml(active.birthPlace)}` : ""}</span>
+        </div>
+        <div class="profile-prefill-actions">
+          <button type="button" class="secondary-button" data-action="edit-birth">修改资料</button>
+          <button type="button" class="secondary-button" data-action="reveal-form">为他人排盘</button>
+        </div>
+      </div>
+    `
+    : "";
   const ungroupedHtml = ungroupedFields.length ? `<div class="form-grid">${ungroupedFields.join("")}</div>` : "";
 
   const advancedFields = properties.detailLevel
     ? renderField("detailLevel", { ...properties.detailLevel, required: false }, toolName)
-    : "";
-
-  // 一键排盘：仅当工具以出生信息为主输入、且当前档案覆盖全部必填字段时启用
-  const usesBirth = Boolean(properties.birthYear);
-  const profileReq = active ? profileToRequest(active) : null;
-  const quickReady = Boolean(
-    usesBirth && active && profileReq && required.length > 0 &&
-    required.every((key) => profileReq[key] !== undefined)
-  );
-
-  const quickCard = quickReady
-    ? `
-      <section class="panel quick-start-card">
-        <div class="quick-start-info">
-          <span class="quick-start-label">当前测算对象</span>
-          <strong>${escapeHtml(profileSummary(active))}</strong>
-        </div>
-        <div class="quick-start-actions">
-          <button class="primary-button" data-action="quick-start" data-tool="${escapeHtml(toolName)}">用我的信息排盘</button>
-          <button class="secondary-button" data-action="reveal-form">为他人排盘</button>
-        </div>
-      </section>
-    `
     : "";
 
   const saveRow = usesBirth
@@ -1380,8 +1397,8 @@ function renderToolForm(toolName) {
         </div>
         <span class="tool-icon" style="--card-tint:${meta.tint};--card-ink:${meta.ink}">${escapeHtml(meta.icon)}</span>
       </div>
-      ${quickCard}
-      <form class="${quickReady ? "form-panel panel is-hidden" : "form-panel panel"}" data-tool-form="${escapeHtml(toolName)}">
+      ${prefillBar}
+      <form class="form-panel panel" data-tool-form="${escapeHtml(toolName)}">
         ${groupHtml}${ungroupedHtml}
         <details class="details-box">
           <summary>高级设置</summary>
@@ -1399,54 +1416,24 @@ function renderToolForm(toolName) {
   );
 }
 
-function revealToolForm() {
+// 展开"已带入"的出生信息分组；clearValues 为 true 时同时清空档案值（为他人排盘）
+function revealBirthGroups(clearValues) {
   const form = document.querySelector("[data-tool-form]");
   if (!form) return;
-  form.classList.remove("is-hidden");
-  // 为他人排盘：清空档案带入的出生资料，方便输入他人信息
-  const birthFields = ["gender", "birthYear", "birthMonth", "birthDay", "birthHour", "birthMinute", "calendarType", "isLeapMonth", "birthPlace", "longitude", "latitude"];
-  form.querySelectorAll("[data-field]").forEach((field) => {
-    if (!birthFields.includes(field.dataset.field)) return;
-    if (field.type === "checkbox") field.checked = false;
-    else field.value = "";
+  form.querySelectorAll('.form-group[data-group="birth"], .form-group[data-group="place"]').forEach((group) => {
+    group.classList.remove("is-hidden");
   });
+  const bar = document.querySelector("[data-prefill-bar]");
+  if (bar) bar.classList.add("is-hidden");
+  if (clearValues) {
+    const birthFields = ["gender", "birthYear", "birthMonth", "birthDay", "birthHour", "birthMinute", "calendarType", "isLeapMonth", "birthPlace", "longitude", "latitude"];
+    form.querySelectorAll("[data-field]").forEach((field) => {
+      if (!birthFields.includes(field.dataset.field)) return;
+      if (field.type === "checkbox") field.checked = false;
+      else field.value = "";
+    });
+  }
   form.scrollIntoView({ behavior: "smooth", block: "start" });
-}
-
-async function quickStartTool(toolName) {
-  const active = getActiveProfile();
-  const form = document.querySelector(`[data-tool-form="${toolName}"]`);
-  if (!active || !form) return;
-  const button = document.querySelector(`[data-action="quick-start"][data-tool="${toolName}"]`);
-  if (button) {
-    button.disabled = true;
-    button.textContent = "计算中...";
-  }
-  applyProfileToForm(active);
-  const tool = getToolDefinition(toolName);
-  const request = collectFormValues(form);
-  const required = tool.inputSchema?.required || [];
-  const missing = required.filter((key) => {
-    const val = request[key];
-    return val === undefined || val === null || val === "";
-  });
-  if (missing.length) {
-    form.classList.remove("is-hidden");
-    form.scrollIntoView({ behavior: "smooth", block: "start" });
-    if (button) {
-      button.disabled = false;
-      button.textContent = "用我的信息排盘";
-    }
-    return;
-  }
-  try {
-    await submitTool(toolName, form);
-  } finally {
-    if (button) {
-      button.disabled = false;
-      button.textContent = "用我的信息排盘";
-    }
-  }
 }
 
 function collectFormValues(form) {
@@ -1716,10 +1703,83 @@ function showBackupStatus(message, ok = true) {
   el.classList.toggle("backup-status-error", !ok);
 }
 
-function renderProfiles() {
+function renderMinePage() {
   const profiles = getProfiles();
   const active = getActiveProfile();
-  const items = profiles.length
+  const settings = getAiSettings();
+  const p = active || {};
+  const val = (key) => escapeHtml(p[key] !== undefined && p[key] !== null ? String(p[key]) : "");
+
+  const profileForm = `
+    <form class="form-panel panel" data-mine-profile-form>
+      <input type="hidden" data-mine-edit-id value="${val("id")}" />
+      <div class="form-grid">
+        <div class="field">
+          <label for="mine-name">姓名 / 称呼</label>
+          <input id="mine-name" data-mine-name value="${val("name")}" placeholder="如：张三" />
+        </div>
+        <div class="field">
+          <label for="mine-gender">性别</label>
+          <select id="mine-gender" data-field="gender">
+            <option value="male" ${p.gender !== "female" ? "selected" : ""}>男</option>
+            <option value="female" ${p.gender === "female" ? "selected" : ""}>女</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="mine-birth-year">出生年</label>
+          <input id="mine-birth-year" type="number" inputmode="numeric" data-field="birthYear" value="${val("birthYear")}" min="1900" max="2100" />
+        </div>
+        <div class="field">
+          <label for="mine-birth-month">出生月</label>
+          <input id="mine-birth-month" type="number" inputmode="numeric" data-field="birthMonth" value="${val("birthMonth")}" min="1" max="12" />
+        </div>
+        <div class="field">
+          <label for="mine-birth-day">出生日</label>
+          <input id="mine-birth-day" type="number" inputmode="numeric" data-field="birthDay" value="${val("birthDay")}" min="1" max="31" />
+        </div>
+        <div class="field">
+          <label for="mine-birth-hour">出生时</label>
+          <input id="mine-birth-hour" type="number" inputmode="numeric" data-field="birthHour" value="${val("birthHour")}" min="0" max="23" />
+        </div>
+        <div class="field">
+          <label for="mine-birth-minute">出生分</label>
+          <input id="mine-birth-minute" type="number" inputmode="numeric" data-field="birthMinute" value="${val("birthMinute")}" min="0" max="59" />
+        </div>
+        <div class="field">
+          <label for="mine-calendar">历法</label>
+          <select id="mine-calendar" data-field="calendarType">
+            <option value="solar" ${p.calendarType !== "lunar" ? "selected" : ""}>公历</option>
+            <option value="lunar" ${p.calendarType === "lunar" ? "selected" : ""}>农历</option>
+          </select>
+        </div>
+        <div class="field">
+          <div class="toggle-field">
+            <label for="mine-leap">闰月</label>
+            <input id="mine-leap" data-field="isLeapMonth" type="checkbox" ${p.isLeapMonth ? "checked" : ""} />
+          </div>
+        </div>
+        <div class="field">
+          <label for="mine-place">出生地点</label>
+          <input id="mine-place" data-field="birthPlace" value="${val("birthPlace")}" placeholder="如：北京市" />
+        </div>
+        <div class="field">
+          <label for="mine-lng">经度（可选）</label>
+          <input id="mine-lng" type="number" step="0.0001" data-field="longitude" value="${val("longitude")}" />
+        </div>
+        <div class="field">
+          <label for="mine-lat">纬度（可选）</label>
+          <input id="mine-lat" type="number" step="0.0001" data-field="latitude" value="${val("latitude")}" />
+        </div>
+      </div>
+      <div class="form-actions">
+        <button class="secondary-button" type="button" data-action="new-profile">新建档案</button>
+        <button class="primary-button" type="submit">${active ? "保存修改" : "保存档案"}</button>
+      </div>
+      <div class="error-box is-hidden" data-mine-error></div>
+    </form>
+  `;
+
+  const profileList = profiles.length
     ? profiles
         .map((profile) => {
           const isActive = active?.id === profile.id;
@@ -1731,55 +1791,54 @@ function renderProfiles() {
                 <span>${isActive ? "当前测算对象" : "未启用"}</span>
               </div>
               <div class="profile-list-actions">
-                <button class="secondary-button" data-action="set-profile" data-profile-id="${escapeHtml(
-                  profile.id
-                )}">${isActive ? "继续使用" : "设为当前"}</button>
-                <button class="secondary-button" data-action="delete-profile" data-profile-id="${escapeHtml(
-                  profile.id
-                )}">删除</button>
+                <button class="secondary-button" data-action="set-profile" data-profile-id="${escapeHtml(profile.id)}">${isActive ? "编辑此档案" : "设为当前"}</button>
+                <button class="secondary-button" data-action="delete-profile" data-profile-id="${escapeHtml(profile.id)}">删除</button>
               </div>
             </div>
           `;
         })
         .join("")
-    : `<div class="empty-box panel"><div><p>还没有保存档案。</p><button class="primary-button" data-action="home">返回选择工具</button></div></div>`;
+    : "";
 
-  return renderShell(
-    `
-      <h1 class="page-heading">命主档案</h1>
-      <p class="page-subtitle">档案只保存在当前浏览器本地，选择后排盘表单会自动带入资料。</p>
-      <div class="history-list">${items}</div>
-      <section class="panel backup-panel">
-        <h2>数据备份</h2>
-        <p>导出全部档案、历史记录与模型密钥设置，或从备份文件恢复。建议定期备份，防止清除浏览器数据导致丢失。</p>
-        <div class="backup-actions">
-          <button class="secondary-button" data-action="export-data">导出数据</button>
-          <button class="secondary-button" data-action="import-data">导入数据</button>
-          <input type="file" accept="application/json,.json" data-import-file class="is-hidden" />
-        </div>
-        <p class="backup-status is-hidden" data-backup-status></p>
-      </section>
-    `,
-    "profiles"
-  );
-}
+  const history = getHistory();
+  const historyPreview = history.length
+    ? history
+        .slice(0, 5)
+        .map(
+          (item, index) => `
+            <button class="history-item" data-action="open-history" data-index="${index}">
+              <span>
+                <strong>${escapeHtml(toolLabel(item.tool))}</strong>
+                <span>${escapeHtml(formatTime(item.time))}</span>
+              </span>
+              <span>打开</span>
+            </button>
+          `
+        )
+        .join("")
+    : `<p class="mine-empty">暂无历史记录。</p>`;
 
-function renderAiSettingsPage() {
-  const settings = getAiSettings();
   const providerOptions = Object.entries(AI_PROVIDERS)
     .map(
       ([key, config]) =>
-        `<option value="${escapeHtml(key)}" ${settings.provider === key ? "selected" : ""}>${escapeHtml(
-          config.label
-        )}</option>`
+        `<option value="${escapeHtml(key)}" ${settings.provider === key ? "selected" : ""}>${escapeHtml(config.label)}</option>`
     )
     .join("");
   const current = AI_PROVIDERS[settings.provider];
 
   return renderShell(
     `
-      <h1 class="page-heading">模型设置</h1>
-      <p class="page-subtitle">密钥只保存在本机，不会写入 APK 文件或发送到服务器。</p>
+      <h1 class="page-heading">我的</h1>
+      <p class="page-subtitle">个人档案、历史记录、模型设置与数据备份。档案只保存在本机。</p>
+
+      <div class="section-heading"><h2>个人档案</h2></div>
+      ${profileForm}
+      ${profileList ? `<div class="history-list mine-profile-list">${profileList}</div>` : ""}
+
+      <div class="section-heading"><h2>历史记录</h2>${history.length ? `<button class="secondary-button mine-more" data-action="history">查看全部</button>` : ""}</div>
+      <div class="history-list">${historyPreview}</div>
+
+      <div class="section-heading"><h2>AI 模型</h2></div>
       <form class="form-panel panel" data-ai-settings-form>
         <div class="form-grid">
           <div class="field">
@@ -1794,14 +1853,72 @@ function renderAiSettingsPage() {
           </div>
         </div>
         <div class="form-actions">
-          <button class="secondary-button" type="button" data-action="home">返回首页</button>
           <button class="primary-button" type="submit">保存设置</button>
         </div>
         <div class="error-box is-hidden" data-ai-settings-error></div>
       </form>
+
+      <div class="section-heading"><h2>数据备份</h2></div>
+      <section class="panel backup-panel">
+        <p>导出全部档案、历史记录与模型密钥设置，或从备份文件恢复。建议定期备份，防止清除浏览器数据导致丢失。</p>
+        <div class="backup-actions">
+          <button class="secondary-button" data-action="export-data">导出数据</button>
+          <button class="secondary-button" data-action="import-data">导入数据</button>
+          <input type="file" accept="application/json,.json" data-import-file class="is-hidden" />
+        </div>
+        <p class="backup-status is-hidden" data-backup-status></p>
+      </section>
+
+      ${window.AndroidBridge
+        ? `
+      <div class="section-heading"><h2>关于</h2></div>
+      <section class="panel backup-panel">
+        <p>当前版本 v${escapeHtml(window.AndroidBridge.getVersionName())} · 太卜排盘</p>
+        <div class="backup-actions">
+          <button class="secondary-button" data-action="check-update">检查更新</button>
+        </div>
+      </section>
+      `
+        : ""}
     `,
     "ai"
   );
+}
+
+function saveMineProfile(form) {
+  const errorBox = form.querySelector("[data-mine-error]");
+  const name = form.querySelector("[data-mine-name]")?.value.trim() || "";
+  if (!name) {
+    if (errorBox) {
+      errorBox.textContent = "请先填写姓名或称呼，方便区分多个档案。";
+      errorBox.classList.remove("is-hidden");
+    }
+    form.querySelector("[data-mine-name]")?.focus();
+    return;
+  }
+  const request = collectFormValues(form);
+  const editId = form.querySelector("[data-mine-edit-id]")?.value || "";
+  const existing = getProfiles().find((item) => item.id === editId) || null;
+  const profile = profileFromRequest(name, request, existing);
+  const profiles = getProfiles().filter((item) => item.id !== profile.id);
+  profiles.push(profile);
+  saveProfiles(profiles);
+  setActiveProfile(profile.id);
+  render();
+}
+
+function clearMineProfileForm() {
+  const form = document.querySelector("[data-mine-profile-form]");
+  if (!form) return;
+  form.querySelector("[data-mine-edit-id]").value = "";
+  form.querySelector("[data-mine-name]").value = "";
+  form.querySelectorAll("[data-field]").forEach((field) => {
+    if (field.type === "checkbox") field.checked = false;
+    else field.value = "";
+  });
+  const errorBox = form.querySelector("[data-mine-error]");
+  if (errorBox) errorBox.classList.add("is-hidden");
+  form.querySelector("[data-mine-name]")?.focus();
 }
 
 function saveAiSettingsPageFromPage(form) {
@@ -1941,12 +2058,10 @@ function render() {
     content = renderResult(toolName);
   } else if (first === "history") {
     content = renderHistory();
-  } else if (first === "profiles") {
-    content = renderProfiles();
+  } else if (first === "profiles" || first === "ai") {
+    content = renderMinePage();
   } else if (first === "report") {
     content = renderDailyReport();
-  } else if (first === "ai") {
-    content = renderAiSettingsPage();
   } else {
     content = renderHome();
   }
@@ -1977,7 +2092,7 @@ function bindEvents() {
       } else if (action === "history") {
         window.location.hash = "#/history";
       } else if (action === "profiles") {
-        window.location.hash = "#/profiles";
+        window.location.hash = "#/ai";
       } else if (action === "ai-settings") {
         window.location.hash = "#/ai";
       } else if (action === "report") {
@@ -1988,10 +2103,10 @@ function bindEvents() {
         regenerateDailyAi();
       } else if (action === "tool") {
         window.location.hash = `#/tool/${encodeURIComponent(tool)}`;
-      } else if (action === "quick-start") {
-        quickStartTool(element.dataset.tool);
+      } else if (action === "edit-birth") {
+        revealBirthGroups(false);
       } else if (action === "reveal-form") {
-        revealToolForm();
+        revealBirthGroups(true);
       } else if (action === "copy") {
         copyText();
       } else if (action === "download") {
@@ -2006,6 +2121,8 @@ function bindEvents() {
         clearAiChat();
       } else if (action === "save-profile") {
         saveProfileFromPage();
+      } else if (action === "new-profile") {
+        clearMineProfileForm();
       } else if (action === "set-profile") {
         setActiveProfile(element.dataset.profileId);
         render();
@@ -2032,6 +2149,16 @@ function bindEvents() {
         showBackupStatus(`已导出 ${count} 项数据，请妥善保存备份文件。`);
       } else if (action === "import-data") {
         app.querySelector("[data-import-file]")?.click();
+      } else if (action === "font-menu") {
+        toggleFontMenu(element);
+      } else if (action === "set-font") {
+        setFontScale(element.dataset.font);
+      } else if (action === "check-update") {
+        try {
+          window.AndroidBridge?.checkForUpdateManual();
+        } catch (error) {
+          // 非 APK 环境不会出现该按钮。
+        }
       }
     });
   });
@@ -2077,6 +2204,13 @@ function bindEvents() {
     });
   });
 
+  app.querySelectorAll("[data-mine-profile-form]").forEach((form) => {
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      saveMineProfile(form);
+    });
+  });
+
   app.querySelectorAll("[data-ai-provider]").forEach((select) => {
     select.addEventListener("change", () => {
       const config = AI_PROVIDERS[select.value];
@@ -2114,6 +2248,11 @@ async function init() {
     navigator.serviceWorker.register("./sw.js").catch(() => {});
   }
   initUpdateCheck();
+  // 启动即应用已保存的字号偏好，避免首屏闪动
+  document.documentElement.dataset.font = getFontScaleId();
+  document.addEventListener("click", (event) => {
+    if (!event.target.closest(".font-menu-anchor")) closeFontMenu();
+  });
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) return;
     const { segments } = parseHash();
@@ -2123,13 +2262,67 @@ async function init() {
   });
 }
 
+// 字号调节（大字号模式，老年用户友好；zoom 同步放大文字与点击区域）
+const FONT_SCALE_KEY = "taibu:fontScale";
+const FONT_SCALES = [
+  { id: "normal", label: "标准", zoom: 1 },
+  { id: "large", label: "大", zoom: 1.15 },
+  { id: "xlarge", label: "特大", zoom: 1.3 },
+];
+
+function getFontScaleId() {
+  try {
+    const saved = localStorage.getItem(FONT_SCALE_KEY);
+    return FONT_SCALES.some((s) => s.id === saved) ? saved : "normal";
+  } catch (error) {
+    return "normal";
+  }
+}
+
+function applyFontScale(id) {
+  if (!FONT_SCALES.some((s) => s.id === id)) return;
+  document.documentElement.dataset.font = id;
+  try {
+    localStorage.setItem(FONT_SCALE_KEY, id);
+  } catch (error) {
+    // 无痕模式等存储失败时仅本次生效。
+  }
+}
+
+function toggleFontMenu(button) {
+  const menu = button.parentElement.querySelector(".font-menu");
+  if (!menu) return;
+  menu.hidden = !menu.hidden;
+  button.setAttribute("aria-expanded", String(!menu.hidden));
+}
+
+function closeFontMenu() {
+  const menu = document.querySelector(".font-menu");
+  if (menu) menu.hidden = true;
+  const toggle = document.querySelector(".font-toggle");
+  if (toggle) toggle.setAttribute("aria-expanded", "false");
+}
+
+function setFontScale(id) {
+  applyFontScale(id);
+  document.querySelectorAll(".font-menu [data-font]").forEach((button) => {
+    const isActive = button.dataset.font === id;
+    button.classList.toggle("is-active", isActive);
+    button.setAttribute("aria-pressed", String(isActive));
+  });
+  closeFontMenu();
+}
+
 // 应用内自更新（仅 APK 环境生效，浏览器环境自动跳过）
 function initUpdateCheck() {
   if (!window.AndroidBridge) return;
-  window.__onUpdateCheck = (info) => {
+  window.__onUpdateCheck = (info, manual) => {
     try {
-      const data = typeof info === "string" ? JSON.parse(info) : info;
-      if (!data || !data.versionCode) return;
+      const data = typeof info === "string" ? JSON.parse(info.replace(/^\uFEFF/, "").trim()) : info;
+      if (!data || !data.versionCode) {
+        if (manual) window.alert("检查失败：无法获取服务器版本信息，请检查网络后重试。");
+        return;
+      }
       const current = window.AndroidBridge.getVersionCode();
       if (data.versionCode > current) {
         const version = data.versionName ? `v${data.versionName}` : `v${data.versionCode}`;
@@ -2137,10 +2330,15 @@ function initUpdateCheck() {
         if (window.confirm(`发现新版本 ${version}\n\n${notes}\n\n是否立即下载并安装？`)) {
           window.AndroidBridge.downloadAndInstall(data.url);
         }
+      } else if (manual) {
+        window.alert(`当前已是最新版本 v${window.AndroidBridge.getVersionName()}。`);
       }
     } catch (error) {
-      // 更新检查失败不打扰用户。
+      if (manual) window.alert("检查失败：版本信息解析异常，请稍后重试。");
     }
+  };
+  window.__onUpdateDownloadFailed = () => {
+    window.alert("更新包下载失败，请检查网络后在“我的 → 检查更新”重试。");
   };
   try {
     window.AndroidBridge.checkForUpdate();

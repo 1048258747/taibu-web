@@ -240,36 +240,6 @@ button:disabled {
   font-weight: 600;
 }
 
-.quick-start-card {
-  margin-bottom: 14px;
-  padding: 18px;
-  border-left: 5px solid var(--vermilion);
-}
-
-.quick-start-info {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  margin-bottom: 14px;
-}
-
-.quick-start-label {
-  color: var(--vermilion);
-  font-size: 12px;
-  font-weight: 700;
-}
-
-.quick-start-info strong {
-  font-family: var(--font-serif);
-  font-size: 17px;
-}
-
-.quick-start-actions {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 10px;
-}
-
 .profile-save-row {
   display: grid;
   grid-template-columns: 1fr auto;
@@ -1791,57 +1761,6 @@ body::before {
   font-weight: 700;
 }
 
-/* 首页次要入口：档案与历史 */
-.home-more {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 12px;
-  margin-top: 18px;
-}
-
-.home-more-item {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 14px;
-  text-align: left;
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  background: var(--surface);
-  transition: border-color 0.16s ease, transform 0.16s ease;
-}
-
-.home-more-item:hover,
-.home-more-item:focus-visible {
-  border-color: var(--teal);
-  transform: translateY(-1px);
-}
-
-.home-more-icon {
-  width: 38px;
-  height: 38px;
-  flex: 0 0 38px;
-  display: grid;
-  place-items: center;
-  color: var(--vermilion);
-  background: rgba(163, 58, 46, 0.09);
-  border-radius: 8px;
-  font-family: var(--font-serif);
-  font-size: 18px;
-}
-
-.home-more-item strong {
-  display: block;
-  font-size: 14px;
-}
-
-.home-more-item small {
-  display: block;
-  margin-top: 2px;
-  color: var(--muted);
-  font-size: 12px;
-}
-
 /* 智能对话：未配置模型的引导 */
 .ai-setup-hint {
   display: grid;
@@ -2156,4 +2075,280 @@ input[type="number"] {
   color: color-mix(in srgb, var(--card-ink, var(--gold)) 72%, transparent);
   border-color: color-mix(in srgb, var(--card-ink, var(--gold)) 55%, transparent);
   transform: rotate(-4deg);
+}
+
+/* ============================================================
+   v6 易用性：字号调节 + 档案信息预填摘要
+   老年用户可放大全部界面（zoom 同步放大文字与点击区域）；
+   排盘表单默认折叠档案已有的出生信息，只留需要输入的窗口。
+   ============================================================ */
+
+/* 字号档位：缩放顶栏/内容区/底部导航（fixed 元素随 zoom 生效） */
+html[data-font="large"] .topbar,
+html[data-font="large"] .page,
+html[data-font="large"] .bottom-nav {
+  zoom: 1.15;
+}
+
+html[data-font="xlarge"] .topbar,
+html[data-font="xlarge"] .page,
+html[data-font="xlarge"] .bottom-nav {
+  zoom: 1.3;
+}
+
+/* 顶栏右侧容器：桌面导航 + 字号按钮 */
+.topbar-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.font-menu-anchor {
+  position: relative;
+  display: flex;
+}
+
+.font-toggle {
+  font-family: var(--font-number);
+  font-weight: 700;
+  min-width: 44px;
+  justify-content: center;
+}
+
+/* 字号弹出菜单（位于顶栏内，随字号缩放一起变大） */
+.font-menu {
+  position: absolute;
+  top: calc(100% + 10px);
+  right: 0;
+  z-index: 40;
+  min-width: 178px;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+
+.font-menu[hidden] {
+  display: none;
+}
+
+.font-menu-title {
+  padding: 6px 12px 4px;
+  color: var(--muted);
+  font-size: 12px;
+  letter-spacing: 0.06em;
+}
+
+.font-menu button {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 46px;
+  padding: 0 14px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink);
+  font-size: 15px;
+  text-align: left;
+}
+
+.font-menu button:hover,
+.font-menu button:focus-visible {
+  background: rgba(60, 107, 99, 0.08);
+}
+
+.font-menu button.is-active {
+  background: rgba(163, 58, 46, 0.08);
+  border-color: rgba(163, 58, 46, 0.25);
+  color: var(--vermilion);
+  font-weight: 700;
+}
+
+.font-menu button.is-active::after {
+  content: "✓";
+  margin-left: auto;
+  font-size: 13px;
+}
+
+.font-sample {
+  flex: 0 0 auto;
+  color: var(--muted);
+  line-height: 1;
+}
+
+.font-sample-normal {
+  font-size: 14px;
+}
+
+.font-sample-large {
+  font-size: 17px;
+}
+
+.font-sample-xlarge {
+  font-size: 21px;
+}
+
+/* 档案预填摘要条：表单顶部展示"已带入"的出生资料 */
+.profile-prefill {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 14px;
+  padding: 12px 16px;
+  background: var(--teal-soft);
+  border: 1px solid color-mix(in srgb, var(--teal) 32%, transparent);
+  border-radius: var(--radius);
+}
+
+.profile-prefill-info {
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px;
+  color: var(--ink-soft);
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.profile-prefill-label {
+  color: var(--teal);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
+.profile-prefill-info strong {
+  color: var(--ink);
+  font-family: var(--font-serif);
+  font-size: 16px;
+}
+
+.profile-prefill-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.profile-prefill-actions .secondary-button {
+  min-height: 36px;
+  padding: 0 12px;
+  font-size: 13px;
+}
+
+/* 大字号下按钮水平内边距同步加宽，避免文字贴边 */
+html[data-font="large"] .icon-button,
+html[data-font="large"] .secondary-button,
+html[data-font="large"] .primary-button,
+html[data-font="large"] .topbar-nav button {
+  padding-left: 18px;
+  padding-right: 18px;
+}
+
+html[data-font="xlarge"] .icon-button,
+html[data-font="xlarge"] .secondary-button,
+html[data-font="xlarge"] .primary-button,
+html[data-font="xlarge"] .topbar-nav button {
+  padding-left: 24px;
+  padding-right: 24px;
+}
+
+/* ============================================================
+   v7 流程重构：首页分流 + "我的"中心
+   品牌链接去默认下划线；首页按新老用户分流主卡；
+   档案/历史/AI/备份集中到"我的"页。
+   ============================================================ */
+
+/* 品牌是链接，去掉浏览器默认蓝色下划线 */
+.brand {
+  color: var(--ink);
+  text-decoration: none;
+}
+
+/* 首页眉题：日期行 + 标题 */
+.home-masthead-date {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--vermilion);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+}
+
+.home-masthead .page-subtitle {
+  margin-bottom: 18px;
+}
+
+/* 新用户引导卡：青绿主调，与报告卡的朱砂区分 */
+.home-onboard {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 14px;
+  align-items: center;
+  margin-bottom: 22px;
+  padding: 18px;
+  background:
+    linear-gradient(120deg, rgba(60, 107, 99, 0.09), transparent 46%),
+    var(--surface);
+  border: 1px solid var(--line-strong);
+  border-left: 5px solid var(--teal);
+  box-shadow: var(--shadow);
+}
+
+.home-onboard .home-report-label {
+  color: var(--teal);
+}
+
+.home-onboard h2 {
+  margin: 0 0 6px;
+  font-family: var(--font-serif);
+  font-size: 21px;
+  font-weight: 600;
+}
+
+.home-onboard p {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 13px;
+  line-height: 1.6;
+  max-width: 26em;
+}
+
+/* 报告卡命理摘要行 */
+.home-report-meta {
+  margin: 0 0 4px;
+  color: var(--gold);
+  font-family: var(--font-serif);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+/* "我的"页细节 */
+.mine-empty {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.mine-more {
+  min-height: 34px;
+  padding: 0 12px;
+  font-size: 13px;
+}
+
+.mine-profile-list {
+  margin-top: 12px;
+}
+
+@media (max-width: 380px) {
+  .home-onboard {
+    grid-template-columns: 1fr;
+  }
 }
