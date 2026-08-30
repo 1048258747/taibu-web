@@ -539,6 +539,18 @@ async function callAiApi(systemPrompt, userText, history = []) {
   return content.trim();
 }
 
+const AI_READING_TEMPLATE = [
+  "【输出格式】（必须严格遵循，每次输出结构完全一致）",
+  "1. 用 Markdown 小节标题分节，小节标题固定为：## 排盘概览、## 关键解读、## 建议、## 需要注意、## 温馨提示，顺序与标题文字不得更改或增减。",
+  "2. 各小节内容要求：",
+  "   - 排盘概览：2~3 句话总结本次排盘的核心结论。",
+  "   - 关键解读：分点列出，每点格式为「结论：依据」，结论一句白话，依据写明来自排盘结果的哪一项。",
+  "   - 建议：2~4 条可操作建议，用“- ”列表逐条列出。",
+  "   - 需要注意：列出排盘结果中没有、无法确定的内容，明确说“不确定”。",
+  "   - 温馨提示：提醒仅供传统文化研究与娱乐参考。",
+  "3. 正文开头直接是“## 排盘概览”，不要输出任何开场白、解释或前缀。",
+].join("\n");
+
 async function callAiChat(toolName, item, userText) {
   const systemPrompt = [
     "你是传统命理排盘工具的命理顾问，像一位经验丰富但严谨的传统命理师。",
@@ -546,10 +558,11 @@ async function callAiChat(toolName, item, userText) {
     "回答时先说明依据，再给建议；排盘结果里没有的信息要明确说不确定，不能编造。",
     "不要承诺确定结果，不做医疗、投资、法律等决策建议。",
     "结尾提醒仅供传统文化研究与娱乐参考。",
+    AI_READING_TEMPLATE,
     "本次计算依据如下：",
     buildAiPrompt(toolName, item),
   ].join("\n\n");
-  return callAiApi(systemPrompt, userText, getChatMessages(item));
+  return callAiApi(systemPrompt, `${userText}\n\n请严格按上述输出格式输出，不要改动小节标题。`);
 }
 
 async function callAiReading(toolName, item) {
@@ -976,6 +989,17 @@ function buildDailyAiSystemPrompt(report) {
     "6. 不做医疗、投资、法律等决策建议。",
     "7. 结尾提醒仅供传统文化研究与娱乐参考。",
     "",
+    "【输出格式】（必须严格遵循，每次输出结构完全一致）",
+    "1. 用 Markdown 小节标题分节，小节标题固定为：## 今日概要、## 宜忌与行事、## 吉时与方位、## 穿搭与颜色、## 今日提醒、## 温馨提示，顺序与标题文字不得更改或增减。",
+    "2. 各小节内容要求：",
+    "   - 今日概要：2~3 句话总结今日整体基调，必须提到今日日主（五行）与流日十神。",
+    "   - 宜忌与行事：分“宜”“忌”两段，用“- ”列表逐条列出，每条写明依据。",
+    "   - 吉时与方位：列出计算结果中的吉时（带具体钟点），以及有利方位。",
+    "   - 穿搭与颜色：基于当日五行给出配色建议，并说明是传统五行配色参考。",
+    "   - 今日提醒：基于彭祖百忌、冲煞、凶煞等给出注意事项。",
+    "   - 温馨提示：提醒仅供传统文化研究与娱乐参考。",
+    "3. 正文开头直接是“## 今日概要”，不要输出任何开场白、解释或前缀。",
+    "",
     "【今日计算结果】",
     JSON.stringify(buildDailyAiData(report), null, 2),
   ].join("\n");
@@ -983,7 +1007,7 @@ function buildDailyAiSystemPrompt(report) {
 
 async function callAiDailyReport(report) {
   const data = buildDailyAiData(report);
-  const draft = await callAiApi(buildDailyAiSystemPrompt(report), "请根据上面的计算结果，生成今日报告解读。");
+  const draft = await callAiApi(buildDailyAiSystemPrompt(report), "请根据上面的计算结果，生成今日报告解读。\n\n请严格按上述输出格式输出，不要改动小节标题。");
   // AI 二次校验：对照计算结果核查草稿，修正编造/幻觉内容
   try {
     return await validateDailyAiText(data, draft);
@@ -1001,8 +1025,9 @@ async function validateDailyAiText(data, draft) {
     "1. 逐条核对草稿中的事实性内容是否都能在计算结果数据中找到依据。",
     "2. 找出草稿中编造、推测或与数据不符的内容（例如数据里没有的具体时间点、宜忌、颜色、方位、事件、数字等），删除或改写为数据支持的表述。",
     "3. 保持草稿的整体结构、语气和长度，只修正错误，不要重写全文。",
-    "4. 如果草稿完全符合数据，原样输出。",
-    "5. 只输出修正后的解读正文，不要输出任何解释、说明或前缀。",
+    "4. 必须保留草稿中所有 “## 小标题”，不得更改、删除或新增小节标题。",
+    "5. 如果草稿完全符合数据，原样输出。",
+    "6. 只输出修正后的解读正文，不要输出任何解释、说明或前缀。",
     "",
     "【计算结果数据】",
     JSON.stringify(data, null, 2),
