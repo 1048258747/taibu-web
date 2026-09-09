@@ -189,6 +189,11 @@ const AI_PROVIDERS = {
     baseUrl: "https://api.deepseek.com/v1",
     model: "deepseek-v4-flash",
   },
+  mimo: {
+    label: "小米 MiMo",
+    baseUrl: "https://api.xiaomimimo.com/v1",
+    model: "mimo-v2.5-pro",
+  },
 };
 
 const state = {
