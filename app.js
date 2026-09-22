@@ -179,20 +179,24 @@ const PROFILES_KEY = "taibu:profiles";
 const ACTIVE_PROFILE_KEY = "taibu:active-profile";
 
 const AI_PROVIDERS = {
-  minimax: {
-    label: "MiniMax M3",
-    baseUrl: "https://api.minimax.chat/v1",
-    model: "minimax-m3",
-  },
   deepseek: {
-    label: "DeepSeek V4 Flash",
-    baseUrl: "https://api.deepseek.com/v1",
-    model: "deepseek-v4-flash",
+    label: "DeepSeek",
+    baseUrl: "https://api.deepseek.com",
+    model: "deepseek-flash",
+    models: [
+      { model: "deepseek-flash", label: "DeepSeek V4.1 Flash" },
+      { model: "deepseek-v4-pro", label: "DeepSeek V4 Pro" },
+    ],
   },
   mimo: {
     label: "小米 MiMo",
     baseUrl: "https://api.xiaomimimo.com/v1",
-    model: "mimo-v2.5-pro",
+    model: "mimo-v2.6-flash",
+    models: [
+      { model: "mimo-v2.6-flash", label: "MiMo V2.6 Flash" },
+      { model: "mimo-v2.6-pro", label: "MiMo V2.6 Pro（旗舰）" },
+      { model: "mimo-v2.6-pro-ultraspeed", label: "MiMo V2.6 Pro 超高速" },
+    ],
   },
 };
 
@@ -440,12 +444,13 @@ function getAiSettings() {
   };
   try {
     const saved = JSON.parse(localStorage.getItem(AI_SETTINGS_KEY) || "{}");
-    const provider = AI_PROVIDERS[saved.provider] ? saved.provider : fallback.provider;
+    const valid = Boolean(AI_PROVIDERS[saved.provider]);
+    const provider = valid ? saved.provider : fallback.provider;
     return {
       provider,
       apiKey: saved.apiKey || "",
-      model: saved.model || AI_PROVIDERS[provider].model || "",
-      baseUrl: saved.baseUrl || AI_PROVIDERS[provider].baseUrl || "",
+      model: valid ? (saved.model || AI_PROVIDERS[provider].model || "") : AI_PROVIDERS[provider].model,
+      baseUrl: valid ? (saved.baseUrl || AI_PROVIDERS[provider].baseUrl || "") : AI_PROVIDERS[provider].baseUrl,
     };
   } catch {
     return fallback;
@@ -509,8 +514,7 @@ async function callAiApi(systemPrompt, userText, history = []) {
     { role: "user", content: userText },
   ];
 
-  const isMinimax = settings.provider === "minimax";
-  const url = isMinimax ? `${baseUrl}/text/chatcompletion_v2` : `${baseUrl}/chat/completions`;
+  const url = `${baseUrl}/chat/completions`;
   const response = await fetch(url, {
     method: "POST",
     headers: {
@@ -544,7 +548,7 @@ async function callAiApi(systemPrompt, userText, history = []) {
   return content.trim();
 }
 
-// 流式请求：OpenAI 兼容（deepseek/mimo）与 MiniMax 统一由 onDelta 逐段回调。
+// 流式请求：OpenAI 兼容（deepseek/mimo）统一由 onDelta 逐段回调。
 async function streamAiReport(systemPrompt, userText, onDelta) {
   const settings = getAiSettings();
   if (!settings.apiKey.trim()) {
@@ -559,8 +563,7 @@ async function streamAiReport(systemPrompt, userText, onDelta) {
   if (!model) {
     throw new Error("请填写模型名称");
   }
-  const isMinimax = settings.provider === "minimax";
-  const url = isMinimax ? `${baseUrl}/text/chatcompletion_v2` : `${baseUrl}/chat/completions`;
+  const url = `${baseUrl}/chat/completions`;
   const resp = await fetch(url, {
     method: "POST",
     headers: {
@@ -2020,7 +2023,17 @@ function renderMinePage() {
         `<option value="${escapeHtml(key)}" ${settings.provider === key ? "selected" : ""}>${escapeHtml(config.label)}</option>`
     )
     .join("");
-  const current = AI_PROVIDERS[settings.provider];
+  const current = AI_PROVIDERS[settings.provider] || AI_PROVIDERS.deepseek;
+  const modelList = current.models && current.models.length ? current.models : [{ model: current.model, label: current.model }];
+  const activeModel = current.models && current.models.some((m) => m.model === settings.model)
+    ? settings.model
+    : current.model;
+  const modelOptions = modelList
+    .map(
+      (m) =>
+        `<option value="${escapeHtml(m.model)}" ${m.model === activeModel ? "selected" : ""}>${escapeHtml(m.label)}</option>`
+    )
+    .join("");
 
   return renderShell(
     `
@@ -2038,9 +2051,11 @@ function renderMinePage() {
       <form class="form-panel panel" data-ai-settings-form>
         <div class="form-grid">
           <div class="field">
-            <label for="ai-provider">选择模型</label>
+            <label for="ai-provider">提供商</label>
             <select id="ai-provider" data-ai-provider>${providerOptions}</select>
-            <p class="field-hint" data-ai-base-hint>接口：${escapeHtml(current.baseUrl)} · 模型：${escapeHtml(current.model)}</p>
+            <label for="ai-model" style="display:block;margin-top:12px">具体模型</label>
+            <select id="ai-model" data-ai-model>${modelOptions}</select>
+            <p class="field-hint" data-ai-base-hint>接口：${escapeHtml(current.baseUrl)}</p>
           </div>
           <div class="field">
             <label for="ai-key">接口密钥</label>
@@ -2118,10 +2133,11 @@ function clearMineProfileForm() {
 }
 
 function saveAiSettingsPageFromPage(form) {
-  const provider = form.querySelector("[data-ai-provider]")?.value || "minimax";
+  const provider = form.querySelector("[data-ai-provider]")?.value || "deepseek";
+  const model = form.querySelector("[data-ai-model]")?.value || "";
   const apiKey = form.querySelector("[data-ai-key]")?.value || "";
-  const config = AI_PROVIDERS[provider] || AI_PROVIDERS.minimax;
-  saveAiSettings({ provider, apiKey, model: config.model, baseUrl: config.baseUrl });
+  const config = AI_PROVIDERS[provider] || AI_PROVIDERS.deepseek;
+  saveAiSettings({ provider, apiKey, model: model || config.model, baseUrl: config.baseUrl });
   render();
 }
 
@@ -2411,8 +2427,17 @@ function bindEvents() {
     select.addEventListener("change", () => {
       const config = AI_PROVIDERS[select.value];
       const hint = select.parentElement?.querySelector("[data-ai-base-hint]");
-      if (hint && config) {
-        hint.textContent = `接口：${config.baseUrl} · 模型：${config.model}`;
+      const modelSelect = select.parentElement?.querySelector("[data-ai-model]");
+      if (config) {
+        if (modelSelect) {
+          const models = config.models && config.models.length ? config.models : [{ model: config.model, label: config.model }];
+          modelSelect.innerHTML = models
+            .map((m) => `<option value="${escapeHtml(m.model)}">${escapeHtml(m.label)}</option>`)
+            .join("");
+        }
+        if (hint) {
+          hint.textContent = `接口：${config.baseUrl}`;
+        }
       }
     });
   });
