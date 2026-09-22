@@ -544,6 +544,120 @@ async function callAiApi(systemPrompt, userText, history = []) {
   return content.trim();
 }
 
+// 流式请求：OpenAI 兼容（deepseek/mimo）与 MiniMax 统一由 onDelta 逐段回调。
+async function streamAiReport(systemPrompt, userText, onDelta) {
+  const settings = getAiSettings();
+  if (!settings.apiKey.trim()) {
+    throw new Error("请先填写模型接口密钥");
+  }
+  const provider = AI_PROVIDERS[settings.provider];
+  const baseUrl = (settings.baseUrl || provider.baseUrl || "").replace(/\/+$/, "");
+  if (!baseUrl) {
+    throw new Error("请填写接口地址");
+  }
+  const model = settings.model || provider.model || "";
+  if (!model) {
+    throw new Error("请填写模型名称");
+  }
+  const isMinimax = settings.provider === "minimax";
+  const url = isMinimax ? `${baseUrl}/text/chatcompletion_v2` : `${baseUrl}/chat/completions`;
+  const resp = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${settings.apiKey.trim()}`,
+    },
+    body: JSON.stringify({
+      model,
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userText },
+      ],
+      temperature: 0.7,
+      stream: true,
+    }),
+  });
+
+  if (!resp.ok) {
+    let message = `接口请求失败（${resp.status}）`;
+    try {
+      const data = await resp.json();
+      message = data.error?.message || data.message || message;
+    } catch {
+      // 保留默认错误信息。
+    }
+    throw new Error(message);
+  }
+
+  if (!resp.body || !resp.body.getReader) {
+    // 个别网关不回传流（如 content-encoding 被改写），退回普通 JSON 解析
+    const data = await resp.json();
+    const content =
+      data.choices?.[0]?.message?.content || data.reply || data.output_text || "";
+    if (!content.trim()) throw new Error("模型没有返回解读内容");
+    onDelta(content);
+    return content.trim();
+  }
+
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let full = "";
+  let buffer = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop();
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed.startsWith("data:")) continue;
+      const payload = trimmed.slice(5).trim();
+      if (!payload || payload === "[DONE]") continue;
+      try {
+        const json = JSON.parse(payload);
+        const delta =
+          json.choices?.[0]?.delta?.content ||
+          json.choices?.[0]?.delta?.text ||
+          json.choices?.[0]?.text ||
+          json.delta?.content ||
+          json.output_text ||
+          "";
+        if (delta) {
+          full += delta;
+          onDelta(delta);
+        }
+      } catch {
+        // 忽略无法解析的行（如 keep-alive）。
+      }
+    }
+  }
+  if (!full.trim()) {
+    throw new Error("模型没有返回解读内容");
+  }
+  return full.trim();
+}
+
+// 本地规则校验：只保留一条「所述宜/忌是否在计算结果中」的硬核验，
+// 替代原先耗时的二次 AI 调用。命中的保留，未命中的补一句免责标注。
+function localValidateDailyText(data, draft) {
+  const suitable = [...(data.宜 || [])].filter(Boolean).map(String);
+  const avoid = [...(data.忌 || [])].filter(Boolean).map(String);
+
+  let result = String(draft || "");
+  result = result.replace(
+    /^(\s*[-•])\s*(宜|忌)\s*[:：]?\s*([^\n]+)/gm,
+    (whole, bullet, type, content) => {
+      const item = content.trim().split(/[，,。；;（(]/)[0];
+      const set = type === "宜" ? suitable : avoid;
+      const hit = set.some((k) => k && item.includes(k));
+      if (hit) return whole;
+      return `${bullet} ${type} ${item}（此条为模型依五行/黄历的一般性说明，计算结果中未单列）`;
+    }
+  );
+  return result.trim();
+}
+
 const AI_READING_TEMPLATE = [
   "【输出格式】（必须严格遵循，每次输出结构完全一致）",
   "1. 用 Markdown 小节标题分节，小节标题固定为：## 排盘概览、## 关键解读、## 建议、## 需要注意、## 温馨提示，顺序与标题文字不得更改或增减。",
@@ -1010,34 +1124,15 @@ function buildDailyAiSystemPrompt(report) {
   ].join("\n");
 }
 
-async function callAiDailyReport(report) {
+async function callAiDailyReport(report, onDelta) {
   const data = buildDailyAiData(report);
-  const draft = await callAiApi(buildDailyAiSystemPrompt(report), "请根据上面的计算结果，生成今日报告解读。\n\n请严格按上述输出格式输出，不要改动小节标题。");
-  // AI 二次校验：对照计算结果核查草稿，修正编造/幻觉内容
-  try {
-    return await validateDailyAiText(data, draft);
-  } catch {
-    // 校验失败时回退到草稿，保证用户始终能看到结果
-    return draft;
-  }
-}
-
-async function validateDailyAiText(data, draft) {
-  const systemPrompt = [
-    "你是“太卜排盘”的今日报告校验助手。下面给出【计算结果数据】和【AI 草稿解读】。",
-    "",
-    "【任务】",
-    "1. 逐条核对草稿中的事实性内容是否都能在计算结果数据中找到依据。",
-    "2. 找出草稿中编造、推测或与数据不符的内容（例如数据里没有的具体时间点、宜忌、颜色、方位、事件、数字等），删除或改写为数据支持的表述。",
-    "3. 保持草稿的整体结构、语气和长度，只修正错误，不要重写全文。",
-    "4. 必须保留草稿中所有 “## 小标题”，不得更改、删除或新增小节标题。",
-    "5. 如果草稿完全符合数据，原样输出。",
-    "6. 只输出修正后的解读正文，不要输出任何解释、说明或前缀。",
-    "",
-    "【计算结果数据】",
-    JSON.stringify(data, null, 2),
-  ].join("\n");
-  return callAiApi(systemPrompt, `【AI 草稿解读】\n${draft}\n\n请按上述要求校验并只输出修正后的解读正文。`);
+  const draft = await streamAiReport(
+    buildDailyAiSystemPrompt(report),
+    "请根据上面的计算结果，生成今日报告解读。\n\n请严格按上述输出格式输出，不要改动小节标题。",
+    onDelta
+  );
+  // 本地规则校验替代在线二次 AI 校验：快、免费、无断流风险
+  return localValidateDailyText(data, draft);
 }
 
 function renderDailyReport() {
@@ -1109,7 +1204,10 @@ function renderDailyAiSection(report) {
     `;
   } else if (aiLoading) {
     body = `
-      <div class="loading-box panel"><div><div class="spinner"></div><div>正在生成今日解读...</div></div></div>
+      <div class="streaming-box panel">
+        <div class="streaming-hint"><span class="spinner"></span>正在生成今日解读…</div>
+        <div class="result-text" data-ai-stream-box></div>
+      </div>
     `;
   } else if (ai && ai.text) {
     body = `
@@ -1171,31 +1269,95 @@ async function loadDailyReportIfNeeded() {
     return;
   }
 
-  // 仅在无 AI 结果且未失败时自动生成；失败后由用户手动重试，避免无限重试循环
+  // 中断超时判定：页面被系统杀掉后 aiLoading 会残留 true，超过时限标记为中断，交由用户手动重试
+  if (cache && cache.report.aiLoading) {
+    const gen = getGenState(active);
+    if (gen && gen.state === "generating" && Date.now() - gen.at > GEN_TIMEOUT_MS) {
+      cache.report.aiLoading = false;
+      cache.report.aiError = "上次生成过程中断，请重试";
+      saveDailyReportCache(active, cache.report);
+      setGenState(active, "error");
+    }
+  }
+
+  // 仅在无 AI 结果且未失败时自动生成；失败/中断后由用户手动重试，避免无限重试循环
   if (cache && !cache.report.ai && !cache.report.aiLoading && !cache.report.aiError) {
-    generateDailyAi(active);
+    beginStreamingReport(active);
   }
 }
 
-async function generateDailyAi(profile) {
+// 生成状态持久化：记录任务状态与开始时间，页面关闭/熄屏恢复后可判断「是继续还是重来」
+const GEN_STATE_KEY = (profile, date) => `taibu:genState:${profile.id}:${date}`;
+const GEN_TIMEOUT_MS = 3 * 60 * 1000; // 超过 3 分钟仍无完成标记视为中断
+
+function getGenState(profile) {
+  try {
+    return JSON.parse(localStorage.getItem(GEN_STATE_KEY(profile, todayString())) || "null");
+  } catch {
+    return null;
+  }
+}
+
+function setGenState(profile, state) {
+  try {
+    localStorage.setItem(
+      GEN_STATE_KEY(profile, todayString()),
+      JSON.stringify({ state, at: Date.now() })
+    );
+  } catch {
+    // 存储失败仅影响恢复判断，不阻断生成。
+  }
+}
+
+let streamActive = false;
+
+async function beginStreamingReport(profile, force = false) {
+  if (streamActive) return;
   const cache = getDailyReportCache(profile);
-  if (!cache || cache.report.aiLoading) return;
+  if (!cache) return;
   const settings = getAiSettings();
   if (!settings.apiKey.trim()) return;
 
+  const partial = force ? "" : cache.report.aiStreamPartial || "";
   cache.report.aiLoading = true;
   cache.report.aiError = "";
+  cache.report.aiStreamPartial = partial;
   saveDailyReportCache(profile, cache.report);
+  setGenState(profile, "generating");
+  streamActive = true;
   render();
+
+  const box = document.querySelector("[data-ai-stream-box]");
+  if (box) box.textContent = partial;
+  let full = partial;
+  let lastPersistAt = 0;
+
   try {
-    const aiText = await callAiDailyReport(cache.report);
+    const aiText = await callAiDailyReport(
+      { ...cache.report, aiStreamPartial: partial },
+      (delta) => {
+        full += delta;
+        if (box) box.textContent = full;
+        const now = Date.now();
+        if (now - lastPersistAt > 400) {
+          lastPersistAt = now;
+          const cur = getDailyReportCache(profile);
+          if (cur) {
+            cur.report.aiStreamPartial = full;
+            saveDailyReportCache(profile, cur.report);
+          }
+        }
+      }
+    );
     const updated = getDailyReportCache(profile);
     if (updated) {
       updated.report.ai = { text: aiText, time: new Date().toISOString() };
       updated.report.aiLoading = false;
       updated.report.aiError = "";
+      delete updated.report.aiStreamPartial;
       saveDailyReportCache(profile, updated.report);
     }
+    setGenState(profile, "done");
   } catch (error) {
     const updated = getDailyReportCache(profile);
     if (updated) {
@@ -1203,8 +1365,11 @@ async function generateDailyAi(profile) {
       updated.report.aiError = error.message;
       saveDailyReportCache(profile, updated.report);
     }
+    setGenState(profile, "error");
+  } finally {
+    streamActive = false;
+    render();
   }
-  render();
 }
 
 function regenerateDailyAi() {
@@ -1214,8 +1379,9 @@ function regenerateDailyAi() {
   if (!cache) return;
   cache.report.ai = null;
   cache.report.aiError = "";
+  cache.report.aiStreamPartial = "";
   saveDailyReportCache(active, cache.report);
-  generateDailyAi(active);
+  beginStreamingReport(active, true);
 }
 
 function retryDailyReport() {
@@ -2284,11 +2450,19 @@ async function init() {
     if (!event.target.closest(".font-menu-anchor")) closeFontMenu();
   });
   document.addEventListener("visibilitychange", () => {
-    if (document.hidden) return;
-    const { segments } = parseHash();
-    if (["report", "result", "tool", "history", "profiles", "ai"].includes(segments[0] || "")) {
-      window.location.hash = "#/";
+    if (document.hidden) {
+      // 熄屏/切后台前把已生成部分落地，避免中断丢数据
+      const active = getActiveProfile();
+      if (active) {
+        const cache = getDailyReportCache(active);
+        if (cache && cache.report.aiStreamPartial) {
+          saveDailyReportCache(active, cache.report);
+        }
+      }
+      return;
     }
+    // 回到前台时留在当前页，仅刷新缓存状态（报告中断会显示可重试，不再强制跳首页）
+    render();
   });
 }
 

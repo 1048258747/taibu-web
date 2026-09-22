@@ -2352,3 +2352,33 @@ html[data-font="xlarge"] .topbar-nav button {
     grid-template-columns: 1fr;
   }
 }
+
+/* ============================================================
+   v8 流式解读：生成过程中实时滚动输出，无需整篇等待
+   ============================================================ */
+.streaming-box {
+  position: relative;
+}
+
+.streaming-hint {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+  color: var(--teal);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.streaming-hint .spinner {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  flex: none;
+}
+
+.streaming-box .result-text {
+  color: var(--ink-soft);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
