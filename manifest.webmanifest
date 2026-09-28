@@ -1,12 +1,12 @@
 {
-  "name": "太卜排盘",
-  "short_name": "太卜",
-  "description": "传统术数排盘计算工具",
+  "name": "赛博玄学",
+  "short_name": "赛博玄学",
+  "description": "传统历法与排盘演算工具",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
-  "background_color": "#f4f2ec",
-  "theme_color": "#a83f34",
+  "background_color": "#080B11",
+  "theme_color": "#080B11",
   "lang": "zh-CN",
   "icons": [
     {

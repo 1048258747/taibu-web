@@ -1,3 +1,5 @@
+import { runAgent, toOpenAiTools } from "./agent.js";
+
 const LABELS = {
   gender: "性别",
   birthYear: "出生年",
@@ -207,6 +209,33 @@ const state = {
   reportLoading: false,
   reportError: "",
 };
+
+// 对话主界面：会话记录与 Agent 运行状态
+const CHAT_KEY = "taibu:chat";
+const CHAT_INDEX_KEY = "taibu:chats";
+const CHAT_ACTIVE_KEY = "taibu:chat:active";
+const CHAT_SESSION_PREFIX = "taibu:chatlog:";
+const CHAT_LOG_LIMIT = 80;
+const CHAT_TITLE_LIMIT = 18;
+const CHAT_HISTORY_LIMIT = 12;
+let chatBusy = false;
+
+// 底部 / 顶部导航（对话为主入口，工具降为次级入口列表）
+const NAV_ITEMS = [
+  { id: "chat", action: "chat", label: "对话", icon: "话" },
+  { id: "tools", action: "tools", label: "工具", icon: "算" },
+  { id: "mine", action: "ai-settings", label: "我的", icon: "我" },
+];
+
+// 品牌标识：圭表日影（竖杆 + 地平线 + 向右日影），纯几何、无汉字
+const BRAND_MARK = `<svg class="brand-mark" viewBox="0 0 64 64" aria-hidden="true" focusable="false"><line x1="10" y1="47" x2="54" y2="47" stroke="currentColor" stroke-opacity="0.45" stroke-width="3" stroke-linecap="round"/><line x1="25" y1="13" x2="25" y2="47" stroke="currentColor" stroke-width="4.6" stroke-linecap="round"/><line x1="25" y1="47" x2="50" y2="47" stroke="currentColor" stroke-opacity="0.78" stroke-width="6.6" stroke-linecap="round"/></svg>`;
+
+// 工具次级入口分组
+const TOOL_GROUPS = [
+  { key: "chart", label: "命盘", tools: ["bazi", "bazi_dayun", "bazi_pillars_resolve", "ziwei", "ziwei_horoscope", "ziwei_flying_star", "astrology"] },
+  { key: "divine", label: "占卜", tools: ["liuyao", "meihua", "qimen", "daliuren", "xiaoliuren", "tarot", "taiyi"] },
+  { key: "calendar", label: "历法", tools: ["almanac"] },
+];
 
 const app = document.getElementById("app");
 
@@ -661,6 +690,110 @@ function localValidateDailyText(data, draft) {
   return result.trim();
 }
 
+// ===== 对话解读本地核验 =====
+// 与 localValidateDailyText 同思路：不额外调用 AI，用本地规则把解读里提到的术数专有名词
+// 回查本次排盘结果原文（引擎输出的 JSON 文本），未出现的就地标注。
+// 词表只收「无歧义」的专有名词：宫位一律带「宫」字（避免把「父母/夫妻」这类日常用语误判），
+// 单字的干支与五行（金木水火土、病死衰）一律不收，因为它们在正常行文里太常见。
+const CHART_TERMS = [
+  // 十神
+  "比肩", "劫财", "食神", "伤官", "偏财", "正财", "七杀", "正官", "偏印", "正印",
+  // 紫微十四主星
+  "紫微", "天机", "太阳", "武曲", "天同", "廉贞", "天府", "太阴", "贪狼", "巨门", "天相", "天梁", "破军",
+  // 六吉六煞（火星太像日常用语，未收）
+  "左辅", "右弼", "文昌", "文曲", "天魁", "天钺", "禄存", "天马", "擎羊", "陀罗", "铃星", "地劫", "地空",
+  // 四化
+  "化禄", "化权", "化科", "化忌",
+  // 五行局
+  "水二局", "木三局", "金四局", "土五局", "火六局",
+  // 十二宫（只收带「宫」的长写法）
+  "命宫", "兄弟宫", "夫妻宫", "子女宫", "财帛宫", "疾厄宫", "迁移宫", "交友宫", "仆役宫",
+  "官禄宫", "田宅宫", "福德宫", "父母宫",
+  // 常见神煞
+  "天乙贵人", "太极贵人", "天德贵人", "月德贵人", "天德合", "月德合", "国印贵人", "福星贵人", "文昌贵人",
+  "将星", "华盖", "驿马", "咸池", "桃花", "红鸾", "天喜", "孤辰", "寡宿", "亡神", "劫煞", "灾煞", "天煞", "月煞", "年煞",
+  "羊刃", "阳刃", "禄神", "金舆", "魁罡", "空亡", "旬空", "披头", "孤鸾煞", "童子煞", "十恶大败", "阴阳差错",
+  "元辰", "六厄", "勾绞", "血刃", "血支", "流霞", "天罗", "地网", "四废", "岁破", "月破", "大耗", "小耗",
+  "官符", "病符", "死符", "五鬼", "丧门", "吊客", "白虎", "贯索", "飞廉", "蜚廉", "指背", "攀鞍", "岁驿", "龙德", "岁建",
+  // 紫微杂曜
+  "三台", "八座", "恩光", "台辅", "封诰", "天贵", "天福", "天官", "天厨", "天刑", "天姚", "天巫", "天月",
+  "天哭", "天虚", "天伤", "天使", "天才", "天寿", "龙池", "凤阁", "解神", "阴煞", "截路", "年解", "月德", "伏兵", "奏书",
+  // 十二长生（多字部分）
+  "长生", "沐浴", "冠带", "临官", "帝旺",
+];
+
+// 引擎输出是英文键名 + 中文值，模型会从键名推出「空亡/日主/四柱」这类说法，
+// 这些词在 JSON 原文里并不出现，必须按键名补认，否则会误报。
+const CHART_KEY_TERMS = [
+  ["kongWang", "空亡"], ["kongZhi", "空亡"], ["xun", "旬"], ["dayMaster", "日主"],
+  ["fourPillars", "四柱"], ["naYin", "纳音"], ["shenSha", "神煞"], ["hiddenStems", "藏干"],
+  ["tenGod", "十神"], ["diShi", "地势"], ["qiType", "气"], ["mingGong", "命宫"], ["taiYuan", "胎元"],
+  ["palaces", "宫位"], ["decadalList", "大限"], ["smallLimit", "小限"], ["mutagenSummary", "四化"],
+  ["fiveElement", "五行局"], ["zodiac", "生肖"], ["sign", "星座"], ["soul", "命主"], ["body", "身主"],
+  ["lifeMasterStar", "命主星"], ["bodyMasterStar", "身主星"], ["scholarStars", "博士星"],
+  ["tianGanWuHe", "天干五合"], ["tianGanChongKe", "天干冲克"], ["diZhiBanHe", "地支半合"],
+  ["diZhiSanHui", "地支三会"], ["relations", "刑冲合害"], ["douJun", "斗君"],
+];
+
+const CHART_TERM_LIST = [...new Set(CHART_TERMS)].sort((a, b) => b.length - a.length);
+
+function buildVerifiedTerms(corpus) {
+  const verified = new Set();
+  for (const [key, term] of CHART_KEY_TERMS) {
+    if (corpus.includes(key)) verified.add(term);
+  }
+  return verified;
+}
+
+function isTermVerified(term, corpus, verified) {
+  if (corpus.includes(term)) return true;
+  if (verified.has(term)) return true;
+  // 宫位/星曜：引擎可能只输出短写法（「父母」而非「父母宫」），回退再查一次
+  const stripped = term.replace(/[宫星]$/, "");
+  return stripped !== term && stripped.length >= 2 && corpus.includes(stripped);
+}
+
+function findUnverifiedTerms(text, corpus, verified) {
+  return CHART_TERM_LIST.filter((term) => text.includes(term) && !isTermVerified(term, corpus, verified));
+}
+
+// 本轮调了工具就用本轮结果；没调（追问场景）则回退到最近一次带排盘结果的历史，
+// 避免拿不到盘面时把正确解读误判成编造。
+function collectVerifyCorpus(trace) {
+  const current = (trace || []).filter((item) => item.ok && item.text).map((item) => item.text);
+  if (current.length) return current;
+  const log = getChatLog();
+  for (let i = log.length - 1; i >= 0; i -= 1) {
+    const texts = (log[i].tools || []).filter((item) => item.ok && item.text).map((item) => item.text);
+    if (texts.length) return texts;
+  }
+  return [];
+}
+
+function verifyChatReading(text, trace) {
+  const body = String(text || "");
+  if (!body.trim()) return body;
+  const corpusParts = collectVerifyCorpus(trace);
+  if (!corpusParts.length) return body;
+  const corpus = corpusParts.join("\n");
+  const verified = buildVerifiedTerms(corpus);
+
+  // 优先精确标注：模型按模板写了「依据：…」，就在那一条后面就地说明
+  let touched = false;
+  const marked = body.replace(/(依据\s*[：:]\s*)([^\n]+)/g, (whole, prefix, segment) => {
+    const bad = findUnverifiedTerms(segment, corpus, verified);
+    if (!bad.length) return whole;
+    touched = true;
+    return `${prefix}${segment}（本地核验：其中「${bad.join("」「")}」未见于本次排盘结果，可能是模型的一般性推论）`;
+  });
+  if (touched) return marked;
+
+  // 模型没按「依据：」格式写时，退化为全文检查 + 末尾统一提示
+  const bad = findUnverifiedTerms(body, corpus, verified);
+  if (!bad.length) return body;
+  return `${body}\n\n本地核验：解读中提到的「${bad.join("」「")}」未见于本次排盘结果，可能是模型的一般性推论，请以排盘结果为准。`;
+}
+
 const AI_READING_TEMPLATE = [
   "【输出格式】（必须严格遵循，每次输出结构完全一致）",
   "1. 用 Markdown 小节标题分节，小节标题固定为：## 排盘概览、## 关键解读、## 建议、## 需要注意、## 温馨提示，顺序与标题文字不得更改或增减。",
@@ -668,7 +801,7 @@ const AI_READING_TEMPLATE = [
   "   - 排盘概览：2~3 句话总结本次排盘的核心结论。",
   "   - 关键解读：分点列出，每点格式为「结论：依据」，结论一句白话，依据写明来自排盘结果的哪一项。",
   "   - 建议：2~4 条可操作建议，用“- ”列表逐条列出。",
-  "   - 需要注意：列出排盘结果中没有、无法确定的内容，明确说“不确定”。",
+  "   - 需要注意：只写排盘结果能支撑的具体提醒（如冲、刑、空亡、煞星落宫等）；不要罗列“盘面未提供 / 无法确定”的内容，也不要为凑字数而写。",
   "   - 温馨提示：提醒仅供传统文化研究与娱乐参考。",
   "3. 正文开头直接是“## 排盘概览”，不要输出任何开场白、解释或前缀。",
 ].join("\n");
@@ -677,7 +810,7 @@ async function callAiChat(toolName, item, userText) {
   const systemPrompt = [
     "你是传统命理排盘工具的命理顾问，像一位经验丰富但严谨的传统命理师。",
     "请结合用户档案、当前排盘结果和对话历史回答。",
-    "回答时先说明依据，再给建议；排盘结果里没有的信息要明确说不确定，不能编造。",
+    "回答时先说明依据，再给建议；只讲排盘结果里能支撑的内容，结果里没有的直接不提，不要写“无法确定”“未给出”这类话，更不能编造。",
     "不要承诺确定结果，不做医疗、投资、法律等决策建议。",
     "结尾提醒仅供传统文化研究与娱乐参考。",
     AI_READING_TEMPLATE,
@@ -821,18 +954,22 @@ function translateHint(text) {
     .replace(/\(\s*\)/g, "");
 }
 
-function renderShell(content, activeNav = "") {
+function renderShell(content, activeNav = "", pageClass = "") {
+  const navButton = (item, extra = "") =>
+    `<button data-action="${item.action}"${extra} class="${activeNav === item.id ? "is-active" : ""}">${item.label}</button>`;
+  const bottomButton = (item) =>
+    `<button data-action="${item.action}" data-icon="${item.icon}" class="${activeNav === item.id ? "is-active" : ""}">${item.label}</button>`;
+
   return `
     <div class="app-shell">
       <header class="topbar">
         <a class="brand" href="#/">
-          <span class="brand-seal">卜</span>
-          <span class="brand-title">太卜排盘</span>
+          <span class="brand-seal">${BRAND_MARK}</span>
+          <span class="brand-title">赛博玄学</span>
         </a>
         <div class="topbar-right">
           <nav class="topbar-nav" aria-label="主导航">
-            <button data-action="home" class="${activeNav === "home" ? "is-active" : ""}">首页</button>
-            <button data-action="ai-settings" class="${activeNav === "ai" ? "is-active" : ""}">我的</button>
+            ${NAV_ITEMS.map((item) => navButton(item)).join("")}
           </nav>
           <div class="font-menu-anchor">
             <button class="icon-button font-toggle" data-action="font-menu" aria-haspopup="true" aria-expanded="false" aria-label="调整字号">A+</button>
@@ -849,78 +986,809 @@ function renderShell(content, activeNav = "") {
           </div>
         </div>
       </header>
-      <main class="page">${content}</main>
+      <main class="page ${pageClass}">${content}</main>
       <nav class="bottom-nav">
-        <button data-action="home" data-icon="宅" class="${activeNav === "home" ? "is-active" : ""}">首页</button>
-        <button data-action="ai-settings" data-icon="我" class="${activeNav === "ai" ? "is-active" : ""}">我的</button>
+        ${NAV_ITEMS.map((item) => bottomButton(item)).join("")}
       </nav>
     </div>
   `;
 }
 
-function renderHome() {
+/* ============================================================
+   对话主界面：Agent 会话（工具能力保留，宫格降为次级入口列表）
+   ============================================================ */
+
+// 会话式存储：索引只存元信息，消息按会话分键，避免一条无限长的记录。
+function newChatId() {
+  return `c${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+}
+
+function chatMessagesKey(id) {
+  return `${CHAT_SESSION_PREFIX}${id}`;
+}
+
+function readJson(key, fallback) {
+  try {
+    const value = JSON.parse(localStorage.getItem(key) || "null");
+    return value === null || value === undefined ? fallback : value;
+  } catch {
+    return fallback;
+  }
+}
+
+function chatSessionTitle(log) {
+  const first = (log || []).find((entry) => entry.role === "user" && entry.content);
+  const text = String(first?.content || "新对话").replace(/\s+/g, " ").trim();
+  if (!text) return "新对话";
+  return text.length > CHAT_TITLE_LIMIT ? `${text.slice(0, CHAT_TITLE_LIMIT)}…` : text;
+}
+
+// 旧版只有一个 taibu:chat 键，迁移成一段历史会话；不设为当前会话，保证打开仍是新的
+function migrateLegacyChat() {
+  const legacy = localStorage.getItem(CHAT_KEY);
+  if (legacy === null) return;
+  localStorage.removeItem(CHAT_KEY);
+  let log = [];
+  try {
+    log = JSON.parse(legacy) || [];
+  } catch {
+    return;
+  }
+  if (!Array.isArray(log) || !log.length) return;
+  const id = newChatId();
+  localStorage.setItem(chatMessagesKey(id), JSON.stringify(log.slice(-CHAT_LOG_LIMIT)));
+  const index = readJson(CHAT_INDEX_KEY, []);
+  const list = Array.isArray(index) ? index : [];
+  list.unshift({
+    id,
+    title: chatSessionTitle(log),
+    createdAt: log[0]?.time || new Date().toISOString(),
+    updatedAt: log[log.length - 1]?.time || new Date().toISOString(),
+    count: log.length,
+  });
+  saveChatIndex(list);
+  localStorage.removeItem(CHAT_ACTIVE_KEY);
+}
+
+function getChatIndex() {
+  migrateLegacyChat();
+  const index = readJson(CHAT_INDEX_KEY, []);
+  return Array.isArray(index) ? index.filter((item) => item && item.id) : [];
+}
+
+function saveChatIndex(index) {
+  localStorage.setItem(CHAT_INDEX_KEY, JSON.stringify(index));
+}
+
+function getActiveChatId() {
+  const id = localStorage.getItem(CHAT_ACTIVE_KEY);
+  if (id) return id;
+  const fresh = newChatId();
+  localStorage.setItem(CHAT_ACTIVE_KEY, fresh);
+  return fresh;
+}
+
+function setActiveChatId(id) {
+  localStorage.setItem(CHAT_ACTIVE_KEY, id);
+}
+
+function getChatLog() {
+  const log = readJson(chatMessagesKey(getActiveChatId()), []);
+  return Array.isArray(log) ? log : [];
+}
+
+function saveChatLog(log) {
+  const id = getActiveChatId();
+  const trimmed = log.slice(-CHAT_LOG_LIMIT);
+  localStorage.setItem(chatMessagesKey(id), JSON.stringify(trimmed));
+  if (!trimmed.length) return;
+  const list = getChatIndex();
+  const existing = list.find((item) => item.id === id);
+  saveChatIndex([
+    {
+      id,
+      title: chatSessionTitle(trimmed),
+      createdAt: existing?.createdAt || trimmed[0]?.time || new Date().toISOString(),
+      updatedAt: trimmed[trimmed.length - 1]?.time || new Date().toISOString(),
+      count: trimmed.length,
+    },
+    ...list.filter((item) => item.id !== id),
+  ]);
+}
+
+function listChatSessions() {
+  return getChatIndex()
+    .slice()
+    .sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
+}
+
+// 开新会话：当前会话已有内容才换新 id，避免历史里堆一堆空会话
+function startNewChat() {
+  const log = readJson(chatMessagesKey(getActiveChatId()), []);
+  if (Array.isArray(log) && log.length) setActiveChatId(newChatId());
+}
+
+function deleteChatSession(id) {
+  localStorage.removeItem(chatMessagesKey(id));
+  saveChatIndex(getChatIndex().filter((item) => item.id !== id));
+  if (localStorage.getItem(CHAT_ACTIVE_KEY) === id) localStorage.removeItem(CHAT_ACTIVE_KEY);
+}
+
+function profileLine(profile) {
+  const gender = profile.gender === "female" ? "女" : "男";
+  const calendar = profile.calendarType === "lunar" ? "农历" : "公历";
+  const place = profile.birthPlace ? `，出生地${profile.birthPlace}` : "";
+  return `${profile.name}（${gender}，${calendar}${profile.birthYear}年${profile.birthMonth}月${profile.birthDay}日${profile.birthHour}时${profile.birthMinute}分${place}）`;
+}
+
+function buildAgentSystemPrompt() {
   const active = getActiveProfile();
-  const now = new Date();
-  const weekdays = ["日", "一", "二", "三", "四", "五", "六"];
-  const dateLine = `${now.getFullYear()}年${now.getMonth() + 1}月${now.getDate()}日 · 星期${weekdays[now.getDay()]}`;
-  const heading = `
-    <div class="home-masthead">
-      <span class="home-masthead-date">${dateLine}</span>
-      <h1 class="page-heading">今日助手</h1>
-      <p class="page-subtitle">${active ? "今日报告已就绪，排盘工具随时可用。" : "先建立您的档案，即可生成今日报告并一键排盘。"}</p>
+  const others = getProfiles().filter((profile) => profile.id !== active?.id);
+  return [
+    "你是「赛博玄学」App 中的命理助手，用简洁、温和、现代的中文与用户对话。",
+    `今天是 ${todayString()}。`,
+    "",
+    "你可以调用工具为用户排盘：八字、紫微斗数、六爻、梅花易数、奇门遁甲、大六壬、小六壬、塔罗、黄历、西方占星、太乙九星等。",
+    "",
+    "行为规则：",
+    "1. 用户想排盘或问命理问题时，直接调用最合适的工具，不要先反问；参数能从用户档案或上下文推断出来的就直接填。",
+    "2. 工具返回结果后，用 Markdown 小节输出解读，小节标题固定为：## 排盘概览、## 关键解读、## 建议、## 需要注意、## 温馨提示。顺序与文字不得更改、增减。",
+    "3. 「关键解读」分点列出，每点格式为「结论：依据」，依据要写明来自排盘结果的哪一项。",
+    "4. 「需要注意」只写排盘结果能支撑的具体提醒（如冲、刑、空亡、煞星落宫等），不要罗列“盘面未提供 / 无法确定”的内容，也不要为凑字数而写。",
+    "5. 严禁编造排盘结果里没有的信息；确实无法从盘面得出的，直接不提，不要写“无法确定”“未给出”这类话。不做医疗、投资、法律等决策建议；结尾提醒仅供传统文化研究与娱乐参考。",
+    "6. 涉及运势或时间的问题（今年、明年、这个月、大运、流年、近期等），必须调用大运 / 运限类工具（bazi_dayun、ziwei_horoscope 等）取到真实数据后再回答，不得以“盘面未提供”为由搪塞。",
+    "7. 与排盘无关的闲聊或知识问答，正常回答即可，不必调用工具。",
+    "8. 同一个问题不要重复调用同一个工具。",
+    active
+      ? `\n当前用户档案：${profileLine(active)}。需要出生信息时优先使用该档案，不要再向用户询问。`
+      : "\n用户尚未建立档案。若工具需要出生信息，先用一句话询问用户的称呼、性别、出生年月日时与出生地，此时不要调用工具。",
+    others.length
+      ? `用户还保存了其他档案：${others.map(profileLine).join("；")}。用户提到其中某人时使用对应档案。`
+      : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+// 历史里 assistant 的 raw 带着整段排盘原文（动辄数千字），全量回灌会明显拖慢首 token。
+// 只让最近 CHAT_RAW_KEEP 条保留原文，更早的降级为解读文本本身；上限与工具结果一致，
+// 保证最近一两轮的命盘不会被截断（追问时还需要原始盘面）。
+const CHAT_RAW_KEEP = 2;
+const CHAT_RAW_LIMIT = 8000;
+
+function chatHistoryForApi(log) {
+  const recent = log.slice(-CHAT_HISTORY_LIMIT);
+  const assistantIndexes = recent
+    .map((entry, index) => (entry.role === "user" ? -1 : index))
+    .filter((index) => index >= 0);
+  const keepRawFrom =
+    assistantIndexes.length > CHAT_RAW_KEEP ? assistantIndexes[assistantIndexes.length - CHAT_RAW_KEEP] : 0;
+
+  return recent
+    .map((entry, index) => {
+      const isUser = entry.role === "user";
+      const keepRaw = isUser || index >= keepRawFrom;
+      let content = String(keepRaw ? entry.raw || entry.content || "" : entry.content || "");
+      if (content.length > CHAT_RAW_LIMIT) content = `${content.slice(0, CHAT_RAW_LIMIT)}\n…（内容过长已截断）`;
+      return { role: isUser ? "user" : "assistant", content };
+    })
+    .filter((entry) => entry.content.trim());
+}
+
+async function executeAgentTool(name, args) {
+  const data = await callToolApi(name, args);
+  saveHistory(name, args, data);
+  return data;
+}
+
+function renderToolTrace(tool) {
+  const meta = getToolMeta(tool.name);
+  return `
+    <details class="chat-tool-card${tool.ok === false ? " is-error" : ""}">
+      <summary>
+        <span class="chat-tool-icon" style="--card-tint:${meta.tint};--card-ink:${meta.ink}">${escapeHtml(meta.icon)}</span>
+        <span class="chat-tool-name">${escapeHtml(toolLabel(tool.name))}</span>
+        <span class="chat-tool-state">${tool.ok === false ? "失败" : "已排盘"}</span>
+      </summary>
+      <pre class="chat-tool-text">${escapeHtml(tool.text || "（无输出）")}</pre>
+    </details>
+  `;
+}
+
+function renderChatMessage(entry) {
+  if (entry.role === "user") {
+    return `
+      <div class="chat-row user">
+        <div class="chat-bubble user"><div class="chat-bubble-body">${escapeHtml(entry.content)}</div></div>
+      </div>
+    `;
+  }
+  const tools = (entry.tools || []).map(renderToolTrace).join("");
+  const body = entry.error
+    ? `<div class="chat-bubble-body chat-error-text">${escapeHtml(entry.content)}</div>`
+    : `<div class="chat-bubble-body markdown-render">${renderMarkdown(entry.content || "")}</div>`;
+  return `
+    <div class="chat-row assistant">
+      <span class="chat-avatar" aria-hidden="true">卜</span>
+      <div class="chat-bubble assistant">${tools}${body}</div>
     </div>
   `;
-  const cached = active ? getDailyReportCache(active) : null;
-  const meta = cached ? extractAlmanacData(cached.report.almanac) : null;
-  const reportEntry = active
-    ? `
-    <section class="panel home-report-entry">
-      <div class="home-report-copy">
-        <span class="home-report-label">今日</span>
-        <h2>今日报告</h2>
-        ${meta && meta.ganZhi ? `<p class="home-report-meta">${escapeHtml(meta.lunarDate)} · ${escapeHtml(meta.ganZhi)}日 · 日主${escapeHtml(meta.dayMaster)}（${escapeHtml(GAN_WU_XING[meta.dayMaster] || "")}）</p>` : ""}
-        <p>${cached ? "今日报告已生成，轻点查看。" : "今日报告待生成，轻点查看。"}</p>
-      </div>
-      <button class="primary-button" data-action="report">查看</button>
-    </section>
-  `
-    : `
-    <section class="panel home-onboard">
-      <div class="home-report-copy">
-        <span class="home-report-label">第一步</span>
-        <h2>建立您的档案</h2>
-        <p>保存出生信息后，排盘自动带入资料，每日报告也将按您的命盘生成。</p>
-      </div>
-      <button class="primary-button" data-action="ai-settings">创建档案</button>
-    </section>
-  `;
+}
 
-  if (state.loading) {
-    return renderShell(`${heading}<div class="loading-box"><div><div class="spinner"></div><div>正在加载工具...</div></div></div>`, "home");
-  }
+function chatQuickChips() {
+  const active = getActiveProfile();
+  const chips = [];
+  if (active) chips.push({ label: "今日报告", action: "report" });
+  chips.push({ label: "今日运势", text: "帮我看看今天的运势，需要注意什么？" });
+  chips.push({ label: "抽一张塔罗", text: "帮我抽一张塔罗牌，看看我现在的状态。" });
+  chips.push({ label: "事业方向", text: "帮我看看今年的事业方向。" });
+  if (!active) chips.push({ label: "建立档案", action: "ai-settings" });
 
-  if (state.error) {
-    return renderShell(`${heading}<div class="error-box">${escapeHtml(state.error)}</div>`, "home");
-  }
-
-  const cards = state.tools
-    .map((tool) => {
-      const meta = getToolMeta(tool.name);
-      return `
-        <button class="tool-card" data-tool="${escapeHtml(tool.name)}" data-seal="${escapeHtml(meta.icon)}" style="--card-accent:${meta.tint};--card-tint:${meta.tint};--card-ink:${meta.ink}">
-          <span class="tool-icon">${escapeHtml(meta.icon)}</span>
-          <h3>${escapeHtml(toolLabel(tool.name))}</h3>
-          <p>${escapeHtml(tool.description || "输入对应信息后开始排盘")}</p>
-          <span class="tool-card-action">开始排盘</span>
-        </button>
-      `;
-    })
+  return chips
+    .map((chip) =>
+      chip.action
+        ? `<button class="chat-chip" data-action="${chip.action}">${escapeHtml(chip.label)}</button>`
+        : `<button class="chat-chip" data-action="chat-chip" data-text="${escapeHtml(chip.text)}">${escapeHtml(chip.label)}</button>`
+    )
     .join("");
+}
+
+function renderChatHero() {
+  const active = getActiveProfile();
+  const hasKey = Boolean(getAiSettings().apiKey.trim());
+  const title = active ? `你好，${escapeHtml(active.name)}` : "你好，我是赛博玄学助手";
+  const subtitle = active
+    ? "已记下你的出生信息，说一句话就能排盘解盘。"
+    : "说一句话就能排盘：八字、紫微、六爻、塔罗……需要出生信息时我会问你。";
+  const notice = hasKey
+    ? ""
+    : `<div class="chat-notice">尚未配置 AI 模型，<button class="link-button" data-action="ai-settings">前往「我的 → AI 模型」</button>设置密钥后即可对话。</div>`;
+  return `
+    <div class="chat-hero">
+      <div class="chat-hero-seal">${BRAND_MARK}</div>
+      <h2 class="chat-hero-title">${title}</h2>
+      <p class="chat-hero-text">${subtitle}</p>
+      ${notice}
+    </div>
+  `;
+}
+
+function renderChat() {
+  const log = getChatLog();
+  const hasLog = log.length > 0;
+  const stream = hasLog ? log.map(renderChatMessage).join("") : renderChatHero();
+  const loadingHint = state.loading
+    ? `<div class="chat-notice">正在加载排盘工具…</div>`
+    : state.error
+      ? `<div class="chat-notice is-error">工具加载失败：${escapeHtml(state.error)}</div>`
+      : "";
 
   return renderShell(
-    `${heading}${reportEntry}<div class="section-heading"><h2>排盘工具</h2></div><div class="tool-grid">${cards}</div><p class="disclaimer">本工具仅供传统文化研究与娱乐参考，不构成任何决策建议。</p>`,
-    "home"
+    `
+      <div class="chat-page">
+        <div class="chat-bar">
+          <button class="chat-bar-button" data-action="chat-history">历史</button>
+          <span class="chat-bar-title">${escapeHtml(hasLog ? chatSessionTitle(log) : "新对话")}</span>
+          <button class="chat-bar-button" data-action="chat-new">新会话</button>
+        </div>
+        <div class="chat-stream${hasLog ? "" : " is-empty"}" data-chat-stream>${stream}${loadingHint}</div>
+        <div class="chat-composer">
+          <div class="chat-input-row">
+            <button class="icon-button chat-tool-button" data-action="chat-sheet" aria-label="快捷开始：推荐问句与排盘工具">术</button>
+            <textarea data-chat-main rows="1" placeholder="说点什么，例如：帮我看看今天的运势"></textarea>
+            ${renderVoiceButton()}
+            <button class="primary-button" data-action="chat-send">发送</button>
+          </div>
+        </div>
+        ${renderChatSheet()}
+      </div>
+    `,
+    "chat",
+    "page-chat"
   );
+}
+
+// 「术」按钮的弹层：推荐问句 + 排盘工具，替代原先常驻在输入框上方的那一行
+function renderChatSheet() {
+  const available = new Set(state.tools.map((tool) => tool.name));
+  const groups = TOOL_GROUPS.map((group) => ({
+    label: group.label,
+    items: group.tools.filter((name) => available.has(name)),
+  })).filter((group) => group.items.length);
+
+  const tools = groups
+    .map(
+      (group) => `
+        <div class="chat-sheet-group">
+          <div class="chat-sheet-label">${escapeHtml(group.label)}</div>
+          <div class="chat-sheet-tools">
+            ${group.items
+              .map((name) => {
+                const meta = getToolMeta(name);
+                return `<button class="chat-sheet-tool" data-action="tool" data-tool="${escapeHtml(name)}">
+                  <span class="chat-tool-icon" style="--card-tint:${meta.tint};--card-ink:${meta.ink}">${escapeHtml(meta.icon)}</span>
+                  <span>${escapeHtml(toolLabel(name))}</span>
+                </button>`;
+              })
+              .join("")}
+          </div>
+        </div>
+      `
+    )
+    .join("");
+
+  return `
+    <div class="chat-sheet" data-chat-sheet hidden>
+      <div class="chat-sheet-backdrop" data-action="chat-sheet-close"></div>
+      <div class="chat-sheet-panel" role="dialog" aria-label="快捷开始">
+        <div class="chat-sheet-head">
+          <strong>快捷开始</strong>
+          <button class="chat-sheet-close" data-action="chat-sheet-close">关闭</button>
+        </div>
+        <div class="chat-sheet-group">
+          <div class="chat-sheet-label">推荐问句</div>
+          <div class="chat-sheet-chips">${chatQuickChips()}</div>
+        </div>
+        ${tools}
+      </div>
+    </div>
+  `;
+}
+
+function closeChatSheet() {
+  const sheet = app.querySelector("[data-chat-sheet]");
+  if (sheet) sheet.hidden = true;
+}
+
+function renderChatSessions() {
+  const sessions = listChatSessions();
+  const items = sessions.length
+    ? sessions
+        .map(
+          (item) => `
+            <div class="session-row">
+              <button class="history-item" data-action="open-chat" data-id="${escapeHtml(item.id)}">
+                <span>
+                  <strong>${escapeHtml(item.title || "新对话")}</strong>
+                  <span>${escapeHtml(formatTime(item.updatedAt))} · ${Number(item.count) || 0} 条</span>
+                </span>
+                <span>继续聊</span>
+              </button>
+              <button class="session-delete" data-action="delete-chat" data-id="${escapeHtml(item.id)}" aria-label="删除这段对话">删除</button>
+            </div>
+          `
+        )
+        .join("")
+    : `<div class="empty-box panel"><div><p>还没有历史对话。</p><button class="primary-button" data-action="chat-new">开始新对话</button></div></div>`;
+
+  return renderShell(
+    `
+      <h1 class="page-heading">对话历史</h1>
+      <p class="page-subtitle">每次打开都是一段新对话，旧对话都留在这里，点开可以接着聊。记录只保存在本机。</p>
+      <div class="history-list">${items}</div>
+    `,
+    "chat"
+  );
+}
+
+function renderToolsPage() {
+  const available = new Set(state.tools.map((tool) => tool.name));
+  const grouped = new Set();
+  const groups = TOOL_GROUPS.map((group) => {
+    const items = group.tools.filter((name) => available.has(name));
+    items.forEach((name) => grouped.add(name));
+    return { label: group.label, items };
+  }).filter((group) => group.items.length);
+
+  const rest = state.tools.map((tool) => tool.name).filter((name) => !grouped.has(name));
+  if (rest.length) groups.push({ label: "其他", items: rest });
+
+  const active = getActiveProfile();
+  const reportRow = active
+    ? `
+      <button class="entry-row entry-row-report" data-action="report">
+        <span class="entry-icon" style="--card-tint:#fae7e2;--card-ink:#a83f34">历</span>
+        <span class="entry-copy">
+          <strong>今日报告</strong>
+          <span>按 ${escapeHtml(active.name)} 的命盘生成今日宜忌、吉时与建议</span>
+        </span>
+        <span class="entry-arrow" aria-hidden="true">›</span>
+      </button>
+    `
+    : `
+      <button class="entry-row" data-action="ai-settings">
+        <span class="entry-icon" style="--card-tint:#dce9e5;--card-ink:#2f6f6a">我</span>
+        <span class="entry-copy">
+          <strong>先建立档案</strong>
+          <span>保存出生信息后，排盘自动带入，并可生成今日报告</span>
+        </span>
+        <span class="entry-arrow" aria-hidden="true">›</span>
+      </button>
+    `;
+
+  const sections = state.loading
+    ? `<div class="loading-box"><div><div class="spinner"></div><div>正在加载工具...</div></div></div>`
+    : state.error
+      ? `<div class="error-box">${escapeHtml(state.error)}</div>`
+      : groups
+          .map(
+            (group) => `
+              <div class="section-heading"><h2>${escapeHtml(group.label)}</h2></div>
+              <div class="entry-list">${group.items.map(renderToolRow).join("")}</div>
+            `
+          )
+          .join("");
+
+  return renderShell(
+    `
+      <h1 class="page-heading">工具</h1>
+      <p class="page-subtitle">对话里能做的事，这里也可以单独进入。</p>
+      <div class="entry-list">${reportRow}</div>
+      ${sections}
+      <p class="disclaimer">本工具仅供传统文化研究与娱乐参考，不构成任何决策建议。</p>
+    `,
+    "tools"
+  );
+}
+
+function renderToolRow(name) {
+  const meta = getToolMeta(name);
+  const def = getToolDefinition(name);
+  return `
+    <button class="entry-row" data-action="tool" data-tool="${escapeHtml(name)}">
+      <span class="entry-icon" style="--card-tint:${meta.tint};--card-ink:${meta.ink}">${escapeHtml(meta.icon)}</span>
+      <span class="entry-copy">
+        <strong>${escapeHtml(toolLabel(name))}</strong>
+        <span>${escapeHtml(def?.description || "输入对应信息后开始排盘")}</span>
+      </span>
+      <span class="entry-arrow" aria-hidden="true">›</span>
+    </button>
+  `;
+}
+
+function scrollChatToEnd() {
+  const stream = app.querySelector("[data-chat-stream]");
+  if (!stream) return;
+  const composer = app.querySelector(".chat-composer");
+  const reserved = composer ? window.innerHeight - composer.getBoundingClientRect().top + 16 : 24;
+  const delta = stream.getBoundingClientRect().bottom - (window.innerHeight - reserved);
+  if (delta > 0) window.scrollTo({ top: window.scrollY + delta, behavior: "auto" });
+}
+
+function setChatComposerBusy(busy) {
+  const input = app.querySelector("[data-chat-main]");
+  const send = app.querySelector('[data-action="chat-send"]');
+  const voice = app.querySelector('[data-action="chat-voice"]');
+  if (input) input.disabled = busy;
+  if (voice && !voice.dataset.unsupported) voice.disabled = busy;
+  if (send) {
+    send.disabled = busy;
+    send.textContent = busy ? "思考中…" : "发送";
+  }
+}
+
+const VOICE_ICON =
+  '<svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="2.5" width="6" height="11" rx="3"></rect><path d="M5 11a7 7 0 0 0 14 0"></path><path d="M12 18v3.5"></path></svg>';
+const CHAT_PLACEHOLDER = "说点什么，例如：帮我看看今天的运势";
+
+let voiceListening = false;
+let voiceRecognition = null;
+let voiceBaseText = "";
+
+function nativeVoiceBridge() {
+  const bridge = window.AndroidBridge;
+  return bridge && typeof bridge.startVoiceInput === "function" ? bridge : null;
+}
+
+function voiceSupported() {
+  const bridge = nativeVoiceBridge();
+  if (bridge) {
+    try {
+      return typeof bridge.hasVoiceInput !== "function" || Boolean(bridge.hasVoiceInput());
+    } catch (error) {
+      return false;
+    }
+  }
+  return Boolean(window.SpeechRecognition || window.webkitSpeechRecognition);
+}
+
+function renderVoiceButton() {
+  const supported = voiceSupported();
+  const label = supported ? "语音输入" : "当前环境不支持语音输入";
+  return `<button class="icon-button chat-voice-button" data-action="chat-voice" data-unsupported="${supported ? "" : "1"}" aria-label="${label}" title="${label}"${supported ? "" : " disabled"}>${VOICE_ICON}</button>`;
+}
+
+function applyVoiceText(text) {
+  const input = app.querySelector("[data-chat-main]");
+  if (!input) return;
+  const spoken = String(text || "").trim();
+  const merged = `${voiceBaseText}${voiceBaseText && spoken ? " " : ""}${spoken}`.trim();
+  input.value = merged;
+  input.dispatchEvent(new Event("input"));
+}
+
+function setVoiceListening(active) {
+  voiceListening = active;
+  const button = app.querySelector('[data-action="chat-voice"]');
+  const input = app.querySelector("[data-chat-main]");
+  if (button) {
+    button.classList.toggle("is-listening", active);
+    button.setAttribute("aria-pressed", String(active));
+  }
+  if (input) input.placeholder = active ? "正在聆听…说完点一下麦克风" : CHAT_PLACEHOLDER;
+}
+
+function stopVoiceInput() {
+  if (voiceRecognition) {
+    try {
+      voiceRecognition.stop();
+    } catch (error) {
+      // 已结束的识别再 stop 会抛异常，忽略即可。
+    }
+    voiceRecognition = null;
+  }
+  const bridge = nativeVoiceBridge();
+  if (bridge && typeof bridge.stopVoiceInput === "function") {
+    try {
+      bridge.stopVoiceInput();
+    } catch (error) {
+      // 忽略。
+    }
+  }
+  setVoiceListening(false);
+}
+
+function startVoiceInput() {
+  if (voiceListening) {
+    stopVoiceInput();
+    return;
+  }
+  const input = app.querySelector("[data-chat-main]");
+  voiceBaseText = input ? input.value.trim() : "";
+
+  const bridge = nativeVoiceBridge();
+  if (bridge) {
+    setVoiceListening(true);
+    try {
+      bridge.startVoiceInput();
+    } catch (error) {
+      setVoiceListening(false);
+      window.alert(`语音输入启动失败：${error.message}`);
+    }
+    return;
+  }
+
+  const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!Recognition) {
+    window.alert("当前环境不支持语音输入，请直接用键盘输入。");
+    return;
+  }
+
+  const recognition = new Recognition();
+  voiceRecognition = recognition;
+  recognition.lang = "zh-CN";
+  recognition.continuous = false;
+  recognition.interimResults = true;
+  recognition.maxAlternatives = 1;
+
+  let settled = "";
+  recognition.onstart = () => setVoiceListening(true);
+  recognition.onresult = (event) => {
+    let interim = "";
+    for (let i = event.resultIndex; i < event.results.length; i += 1) {
+      const result = event.results[i];
+      const transcript = result[0] ? result[0].transcript : "";
+      if (result.isFinal) settled += transcript;
+      else interim += transcript;
+    }
+    applyVoiceText(`${settled}${interim}`);
+  };
+  recognition.onerror = (event) => {
+    voiceRecognition = null;
+    setVoiceListening(false);
+    const reasons = {
+      "not-allowed": "没有麦克风权限，请在浏览器设置里允许后重试。",
+      "service-not-allowed": "浏览器未启用语音识别服务。",
+      "no-speech": "没有听到声音，请再说一次。",
+      "audio-capture": "没有检测到麦克风设备。",
+      network: "语音识别需要联网，请检查网络后重试。",
+    };
+    window.alert(reasons[event.error] || `语音识别失败：${event.error || "未知错误"}`);
+  };
+  recognition.onend = () => {
+    voiceRecognition = null;
+    setVoiceListening(false);
+  };
+
+  try {
+    recognition.start();
+  } catch (error) {
+    voiceRecognition = null;
+    setVoiceListening(false);
+    window.alert(`语音输入启动失败：${error.message}`);
+  }
+}
+
+// 安卓壳通过原生 SpeechRecognizer 识别，再回调到这里（浏览器环境不注册）
+function initVoiceBridge() {
+  window.__taibuVoiceState = (state) => setVoiceListening(state === "listening");
+  window.__taibuVoicePartial = (text) => applyVoiceText(text);
+  window.__taibuVoiceResult = (text) => {
+    setVoiceListening(false);
+    applyVoiceText(text);
+  };
+  window.__taibuVoiceError = (message) => {
+    setVoiceListening(false);
+    window.alert(String(message || "语音识别失败，请重试。"));
+  };
+}
+
+async function sendChatMessage(rawText) {
+  const text = String(rawText || "").trim();
+  if (!text || chatBusy) return;
+  if (voiceListening) stopVoiceInput();
+
+  const settings = getAiSettings();
+  if (!settings.apiKey.trim()) {
+    window.location.hash = "#/ai";
+    return;
+  }
+
+  const log = getChatLog();
+  log.push({ role: "user", content: text, time: new Date().toISOString() });
+  saveChatLog(log);
+  render();
+  await streamAgentReply(text);
+}
+
+async function streamAgentReply(userText) {
+  const stream = app.querySelector("[data-chat-stream]");
+  if (!stream) return;
+
+  const settings = getAiSettings();
+  chatBusy = true;
+  setChatComposerBusy(true);
+
+  const row = document.createElement("div");
+  row.className = "chat-row assistant";
+  row.innerHTML = `
+    <span class="chat-avatar" aria-hidden="true">卜</span>
+    <div class="chat-bubble assistant is-live">
+      <div class="chat-tools" data-live-tools></div>
+      <div class="chat-bubble-body markdown-render" data-live-body></div>
+      <div class="typing-row">
+        <div class="typing-indicator" data-live-typing><span></span><span></span><span></span></div>
+        <span class="typing-hint" data-live-hint></span>
+      </div>
+    </div>
+  `;
+  stream.appendChild(row);
+
+  const bubble = row.querySelector(".chat-bubble");
+  const liveTools = bubble.querySelector("[data-live-tools]");
+  const liveBody = bubble.querySelector("[data-live-body]");
+  const liveTyping = bubble.querySelector("[data-live-typing]");
+  const liveHint = bubble.querySelector("[data-live-hint]");
+  let buffer = "";
+  let paintTimer = 0;
+  let lastPaint = 0;
+  let lastScroll = 0;
+
+  // 长解读时每帧全量重解析 markdown + 重建 DOM 会越来越卡，节流到约 80ms 一次；
+  // 流结束后 finally 里的 render() 会用落库内容整体重绘，所以尾部不会丢。
+  const PAINT_INTERVAL_MS = 80;
+
+  const paint = () => {
+    paintTimer = 0;
+    lastPaint = Date.now();
+    if (!liveBody.isConnected) return;
+    liveBody.innerHTML = renderMarkdown(buffer);
+    const now = Date.now();
+    if (now - lastScroll > 200) {
+      lastScroll = now;
+      scrollChatToEnd();
+    }
+  };
+  const schedulePaint = () => {
+    if (paintTimer) return;
+    paintTimer = setTimeout(paint, Math.max(0, PAINT_INTERVAL_MS - (Date.now() - lastPaint)));
+  };
+
+  const setHint = (text) => {
+    if (!liveHint) return;
+    liveHint.textContent = text;
+    liveHint.hidden = !text;
+  };
+
+  const onEvent = (event) => {
+    if (event.type === "round") {
+      buffer = "";
+      liveBody.innerHTML = "";
+      liveTyping.hidden = false;
+      setHint(event.round > 0 ? "正在整理解读…" : "正在理解你的问题…");
+      return;
+    }
+    if (event.type === "delta") {
+      buffer += event.text;
+      liveTyping.hidden = true;
+      setHint("");
+      schedulePaint();
+      return;
+    }
+    if (event.type === "tool") {
+      const meta = getToolMeta(event.name);
+      const card = document.createElement("div");
+      card.className = "chat-tool-card is-running";
+      card.innerHTML = `
+        <span class="chat-tool-icon" style="--card-tint:${meta.tint};--card-ink:${meta.ink}">${escapeHtml(meta.icon)}</span>
+        <span class="chat-tool-name">${escapeHtml(toolLabel(event.name))}</span>
+        <span class="chat-tool-state">排盘中…</span>
+      `;
+      liveTools.appendChild(card);
+      liveTyping.hidden = false;
+      setHint("正在排盘…");
+      scrollChatToEnd();
+      return;
+    }
+    if (event.type === "tool-done") {
+      const card = liveTools.lastElementChild;
+      if (card) {
+        card.classList.remove("is-running");
+        if (!event.ok) card.classList.add("is-error");
+        const stateEl = card.querySelector(".chat-tool-state");
+        if (stateEl) stateEl.textContent = event.ok ? "已排盘" : "失败";
+      }
+      return;
+    }
+    if (event.type === "notice") {
+      const notice = document.createElement("div");
+      notice.className = "chat-notice";
+      notice.textContent = event.message;
+      liveTools.appendChild(notice);
+    }
+  };
+
+  let trace = [];
+  try {
+    const result = await runAgent({
+      settings,
+      systemPrompt: buildAgentSystemPrompt(),
+      history: chatHistoryForApi(getChatLog().slice(0, -1)),
+      userText,
+      tools: toOpenAiTools(state.tools),
+      executeTool: executeAgentTool,
+      onEvent,
+    });
+    trace = result.trace || [];
+    const draftText = (result.text || buffer).trim() || "（模型没有返回内容）";
+    // 落库前做本地核验：把解读里查不到出处的术数名词就地标注（只追加说明，不改写模型结论）
+    const finalText = verifyChatReading(draftText, trace);
+    const parts = trace
+      .filter((item) => item.ok)
+      .map((item) => `【排盘结果 · ${toolLabel(item.name)}】\n${item.text}`);
+    const log = getChatLog();
+    log.push({
+      role: "assistant",
+      content: finalText,
+      raw: parts.length ? `${parts.join("\n\n")}\n\n【解读】\n${finalText}` : finalText,
+      tools: trace.map((item) => ({ name: item.name, ok: item.ok, text: item.text })),
+      time: new Date().toISOString(),
+    });
+    saveChatLog(log);
+  } catch (error) {
+    const log = getChatLog();
+    log.push({
+      role: "assistant",
+      content: `抱歉，这次没能完成：${error.message}`,
+      error: true,
+      time: new Date().toISOString(),
+    });
+    saveChatLog(log);
+  } finally {
+    chatBusy = false;
+    render();
+    scrollChatToEnd();
+  }
 }
 
 function getDailyReportCache(profile) {
@@ -1100,14 +1968,14 @@ function buildDailyAiData(report) {
 
 function buildDailyAiSystemPrompt(report) {
   return [
-    "你是“太卜排盘”的今日报告解读助手。下面给出的是由黄历计算引擎严格计算得出的“今日计算结果”（JSON 数据）。",
+    "你是“赛博玄学”的今日报告解读助手。下面给出的是由黄历计算引擎严格计算得出的“今日计算结果”（JSON 数据）。",
     "",
     "【硬性要求】",
     "1. 只能解释计算结果中出现的内容；计算结果里没有的信息，一律不得编造、推测或补充。",
     "2. 每条建议都必须能在计算结果中找到依据，并明确写出依据（例如“今日宜出行，所以……”）。",
     "3. 穿搭颜色只能基于“当日五行”推导，五行→传统配色映射为：金→白/银/金，木→绿/青，水→黑/蓝，火→红/紫，土→黄/棕。必须说明这是传统五行配色参考，不是确定预测。没有天气数据，不要提天气。",
     "4. 计算结果里没有的具体时间点、具体事件等信息不要编造。",
-    "5. 不确定的内容要明确说“不确定”，不要用模糊语言掩盖。",
+    "5. 计算结果里没有的内容直接不提，不要写“无法确定”“未给出”这类话。",
     "6. 不做医疗、投资、法律等决策建议。",
     "7. 结尾提醒仅供传统文化研究与娱乐参考。",
     "",
@@ -1147,7 +2015,7 @@ function renderDailyReport() {
         <p class="page-subtitle">需要先选择命主档案，才能生成今日报告。</p>
         <div class="empty-box panel"><div><p>还没有选择命主档案。</p><button class="primary-button" data-action="profiles">前往档案</button></div></div>
       `,
-      "home"
+      "chat"
     );
   }
 
@@ -1158,7 +2026,7 @@ function renderDailyReport() {
         <div class="error-box">${escapeHtml(state.reportError)}</div>
         <button class="primary-button" data-action="retry-report">重新生成</button>
       `,
-      "home"
+      "chat"
     );
   }
 
@@ -1169,7 +2037,7 @@ function renderDailyReport() {
         <h1 class="page-heading">今日报告</h1>
         <div class="loading-box panel"><div><div class="spinner"></div><div>正在生成今日报告...</div></div></div>
       `,
-      "home"
+      "chat"
     );
   }
 
@@ -1177,7 +2045,7 @@ function renderDailyReport() {
   return renderShell(
     `
       <div class="result-toolbar">
-        <button class="secondary-button" data-action="home">返回首页</button>
+        <button class="secondary-button" data-action="home">返回对话</button>
         <button class="secondary-button" data-action="retry-report">重新生成</button>
       </div>
       <h1 class="page-heading">今日报告</h1>
@@ -1186,7 +2054,7 @@ function renderDailyReport() {
       ${renderDailyAiSection(report)}
       <p class="disclaimer">本工具仅供传统文化研究与娱乐参考，不构成任何决策建议。</p>
     `,
-    "home"
+    "chat"
   );
 }
 
@@ -1588,7 +2456,7 @@ function renderToolForm(toolName) {
 
   return renderShell(
     `
-      <button class="secondary-button" data-action="home">返回工具</button>
+      <button class="secondary-button" data-action="tools">返回工具</button>
       <div class="section-heading">
         <div>
           <h1 class="page-heading">${escapeHtml(toolLabel(toolName))}</h1>
@@ -1605,13 +2473,13 @@ function renderToolForm(toolName) {
         </details>
         ${saveRow}
         <div class="form-actions">
-          <button type="button" class="secondary-button" data-action="home">取消</button>
+          <button type="button" class="secondary-button" data-action="tools">取消</button>
           <button type="submit" class="primary-button">开始排盘</button>
         </div>
         <div class="error-box is-hidden" data-form-error></div>
       </form>
     `,
-    "home"
+    "tools"
   );
 }
 
@@ -1703,7 +2571,7 @@ function renderResult(toolName) {
   if (!stored) {
     return renderShell(
       `
-        <button class="secondary-button" data-action="home">返回工具</button>
+        <button class="secondary-button" data-action="tools">返回工具</button>
         <div class="empty-box panel" style="margin-top:18px">
           <div>
             <p>还没有该工具的排盘结果。</p>
@@ -1771,7 +2639,7 @@ function renderAiSection(toolName, item) {
     .map(
       (message, index) => `
         <div class="chat-message ${message.role === "user" ? "user" : "assistant"}">
-          <div class="chat-message-label">${message.role === "user" ? "你" : "太卜"}</div>
+          <div class="chat-message-label">${message.role === "user" ? "你" : "玄学助手"}</div>
           <pre>${escapeHtml(message.content)}</pre>
         </div>
       `
@@ -1836,7 +2704,7 @@ function renderHistory() {
           `
         )
         .join("")
-    : `<div class="empty-box panel"><div><p>暂无历史记录。</p><button class="primary-button" data-action="home">去选择工具</button></div></div>`;
+    : `<div class="empty-box panel"><div><p>暂无历史记录。</p><button class="primary-button" data-action="tools">去选择工具</button></div></div>`;
 
   return renderShell(
     `
@@ -1844,7 +2712,7 @@ function renderHistory() {
       <p class="page-subtitle">记录仅保存在当前浏览器本地。</p>
       <div class="history-list">${items}</div>
     `,
-    "history"
+    "mine"
   );
 }
 
@@ -1881,7 +2749,7 @@ function importAllData(jsonText) {
     throw new Error("文件不是有效的 JSON");
   }
   if (!parsed || parsed.app !== "taibu-paipan" || !parsed.data || typeof parsed.data !== "object") {
-    throw new Error("不是太卜排盘的备份文件");
+    throw new Error("不是赛博玄学的备份文件");
   }
   let count = 0;
   for (const [key, value] of Object.entries(parsed.data)) {
@@ -2069,6 +2937,18 @@ function renderMinePage() {
         <div class="error-box is-hidden" data-ai-settings-error></div>
       </form>
 
+      <div class="section-heading"><h2>外观</h2></div>
+      <section class="panel theme-panel">
+        <p>深色为默认主题，夜间更省眼；白天可切浅色。</p>
+        <div class="theme-switch" role="group" aria-label="主题模式">
+          ${THEMES.map(
+            (theme) => `
+            <button type="button" data-action="set-theme" data-theme="${theme.id}" class="${getThemeId() === theme.id ? "is-active" : ""}" aria-pressed="${getThemeId() === theme.id}">${theme.label}</button>
+          `
+          ).join("")}
+        </div>
+      </section>
+
       <div class="section-heading"><h2>数据备份</h2></div>
       <section class="panel backup-panel">
         <p>导出全部档案、历史记录与模型密钥设置，或从备份文件恢复。建议定期备份，防止清除浏览器数据导致丢失。</p>
@@ -2084,7 +2964,7 @@ function renderMinePage() {
         ? `
       <div class="section-heading"><h2>关于</h2></div>
       <section class="panel backup-panel">
-        <p>当前版本 v${escapeHtml(window.AndroidBridge.getVersionName())} · 太卜排盘</p>
+        <p>当前版本 v${escapeHtml(window.AndroidBridge.getVersionName())} · 赛博玄学</p>
         <div class="backup-actions">
           <button class="secondary-button" data-action="check-update">检查更新</button>
         </div>
@@ -2092,7 +2972,7 @@ function renderMinePage() {
       `
         : ""}
     `,
-    "ai"
+    "mine"
   );
 }
 
@@ -2251,7 +3131,7 @@ function downloadText() {
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
-  link.download = "太卜排盘报告.txt";
+  link.download = "赛博玄学报告.txt";
   document.body.appendChild(link);
   link.click();
   link.remove();
@@ -2270,15 +3150,20 @@ function render() {
     content = renderResult(toolName);
   } else if (first === "history") {
     content = renderHistory();
+  } else if (first === "chats") {
+    content = renderChatSessions();
   } else if (first === "profiles" || first === "ai") {
     content = renderMinePage();
   } else if (first === "report") {
     content = renderDailyReport();
+  } else if (first === "tools") {
+    content = renderToolsPage();
   } else {
-    content = renderHome();
+    content = renderChat();
   }
 
   app.innerHTML = content;
+  syncTopbarHeight();
   bindEvents();
   if (first === "tool" && toolName) {
     // 直接展示的表单（非一键排盘）自动带入当前档案资料
@@ -2301,6 +3186,44 @@ function bindEvents() {
 
       if (action === "home") {
         window.location.hash = "#/";
+      } else if (action === "chat") {
+        window.location.hash = "#/";
+      } else if (action === "tools") {
+        window.location.hash = "#/tools";
+      } else if (action === "chat-voice") {
+        startVoiceInput();
+      } else if (action === "chat-send") {
+        const input = app.querySelector("[data-chat-main]");
+        const text = input?.value.trim() || "";
+        if (input) input.value = "";
+        sendChatMessage(text);
+      } else if (action === "chat-chip") {
+        closeChatSheet();
+        sendChatMessage(element.dataset.text || "");
+      } else if (action === "chat-sheet") {
+        const sheet = app.querySelector("[data-chat-sheet]");
+        if (sheet) sheet.hidden = false;
+      } else if (action === "chat-sheet-close") {
+        closeChatSheet();
+      } else if (action === "chat-history") {
+        window.location.hash = "#/chats";
+      } else if (action === "chat-new") {
+        startNewChat();
+        if (window.location.hash === "#/" || window.location.hash === "") {
+          render();
+        } else {
+          window.location.hash = "#/";
+        }
+      } else if (action === "open-chat") {
+        setActiveChatId(element.dataset.id || "");
+        window.location.hash = "#/";
+        render();
+      } else if (action === "delete-chat") {
+        const id = element.dataset.id || "";
+        if (window.confirm("确定删除这段对话吗？删除后无法恢复。")) {
+          deleteChatSession(id);
+          render();
+        }
       } else if (action === "history") {
         window.location.hash = "#/history";
       } else if (action === "profiles") {
@@ -2365,6 +3288,9 @@ function bindEvents() {
         toggleFontMenu(element);
       } else if (action === "set-font") {
         setFontScale(element.dataset.font);
+      } else if (action === "set-theme") {
+        applyTheme(element.dataset.theme);
+        render();
       } else if (action === "check-update") {
         try {
           window.AndroidBridge?.checkForUpdateManual();
@@ -2450,6 +3376,28 @@ function bindEvents() {
       }
     });
   });
+
+  const chatInput = app.querySelector("[data-chat-main]");
+  if (chatInput) {
+    const autoGrow = () => {
+      chatInput.style.height = "auto";
+      chatInput.style.height = `${Math.min(chatInput.scrollHeight, 140)}px`;
+    };
+    chatInput.addEventListener("input", autoGrow);
+    chatInput.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" && !event.shiftKey) {
+        event.preventDefault();
+        const text = chatInput.value.trim();
+        if (!text) return;
+        chatInput.value = "";
+        autoGrow();
+        sendChatMessage(text);
+      }
+    });
+    if (window.matchMedia("(min-width: 768px)").matches) chatInput.focus();
+  }
+  // 重新渲染会重建输入区，正在聆听时恢复按钮与提示文案
+  if (voiceListening) setVoiceListening(true);
 }
 
 async function init() {
@@ -2469,11 +3417,25 @@ async function init() {
     navigator.serviceWorker.register("./sw.js").catch(() => {});
   }
   initUpdateCheck();
+  initVoiceBridge();
+  // 启动即开一段新对话：旧对话留在「历史」里，不会被一次性铺满整屏
+  migrateLegacyChat();
+  startNewChat();
   // 启动即应用已保存的字号偏好，避免首屏闪动
   document.documentElement.dataset.font = getFontScaleId();
+  // 同步已保存主题（含 theme-color），首屏底色由 index.html 内联脚本先行落地
+  applyTheme(getThemeId());
   document.addEventListener("click", (event) => {
     if (!event.target.closest(".font-menu-anchor")) closeFontMenu();
   });
+  // 字号切换/旋屏都会改变顶栏高度，吸顶偏移要跟着更新
+  window.addEventListener("resize", syncTopbarHeight);
+  // 键盘弹起/收起：resize 覆盖 WebView，visualViewport 覆盖浏览器，focusin/focusout 兜住高度没变的机型
+  window.addEventListener("resize", syncKeyboardState);
+  window.visualViewport?.addEventListener("resize", syncKeyboardState);
+  document.addEventListener("focusin", syncKeyboardState);
+  document.addEventListener("focusout", () => setTimeout(syncKeyboardState, 0));
+  syncKeyboardState();
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) {
       // 熄屏/切后台前把已生成部分落地，避免中断丢数据
@@ -2487,8 +3449,81 @@ async function init() {
       return;
     }
     // 回到前台时留在当前页，仅刷新缓存状态（报告中断会显示可重试，不再强制跳首页）
-    render();
+    // 对话生成中不重渲染，避免打断流式输出
+    if (!chatBusy) render();
   });
+}
+
+// 主题（深色默认 / 浅色可切）；首屏由 index.html 内联脚本先落地，避免闪白
+const THEME_KEY = "taibu:theme";
+const THEMES = [
+  { id: "dark", label: "深色" },
+  { id: "light", label: "浅色" },
+];
+
+function getThemeId() {
+  try {
+    return localStorage.getItem(THEME_KEY) === "light" ? "light" : "dark";
+  } catch (error) {
+    return "dark";
+  }
+}
+
+function applyTheme(id) {
+  const theme = id === "light" ? "light" : "dark";
+  document.documentElement.dataset.theme = theme;
+  const bg = theme === "light" ? "#F4F6FA" : "#080B11";
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (meta) meta.setAttribute("content", bg);
+  // APK 内同步系统状态栏/导航栏底色，否则深色界面顶上会留一条系统灰条
+  try {
+    window.AndroidBridge?.setSystemBarColor?.(bg);
+  } catch (error) {
+    // 浏览器/PWA 没有这个桥接，忽略
+  }
+  try {
+    localStorage.setItem(THEME_KEY, theme);
+  } catch (error) {
+    // 隐私模式下写入失败不影响本次切换
+  }
+}
+
+// 顶栏高度写进 CSS 变量：对话页的「历史 / 新会话」栏靠它吸顶在顶栏正下方
+function syncTopbarHeight() {
+  const bar = app.querySelector(".topbar");
+  if (bar) document.documentElement.style.setProperty("--topbar-h", `${bar.offsetHeight}px`);
+}
+
+// 软键盘弹起时，WebView 会直接压缩布局视口，把 position:fixed 的底部导航一起顶上来。
+// 这里判断键盘是否弹起，弹起时把底部导航藏到屏幕外，只让输入框贴着键盘上沿。
+let viewportBaseHeight = 0;
+let viewportBaseWidth = 0;
+
+function hasTextFocus() {
+  const element = document.activeElement;
+  if (!element) return false;
+  return element.tagName === "TEXTAREA" || element.tagName === "INPUT" || element.isContentEditable;
+}
+
+function syncKeyboardState() {
+  const viewport = window.visualViewport;
+  const layoutHeight = window.innerHeight;
+  const visibleHeight = viewport ? viewport.height : layoutHeight;
+
+  // 旋屏后可用高度会变，宽度一变就重取基准，免得把横屏误判成键盘弹起
+  if (window.innerWidth !== viewportBaseWidth) {
+    viewportBaseWidth = window.innerWidth;
+    viewportBaseHeight = layoutHeight;
+  } else if (layoutHeight > viewportBaseHeight) {
+    viewportBaseHeight = layoutHeight;
+  }
+
+  // WebView 的 adjustResize 缩短布局视口，浏览器只缩可视视口（捏合缩放也会缩，所以要求输入框处于聚焦态）
+  const covered = Math.max(viewportBaseHeight - layoutHeight, layoutHeight - visibleHeight);
+  const keyboardOpen = hasTextFocus() && covered > 120;
+  document.documentElement.dataset.keyboard = keyboardOpen ? "on" : "off";
+  const inset = keyboardOpen ? Math.max(layoutHeight - visibleHeight, 0) : 0;
+  document.documentElement.style.setProperty("--kb-inset", `${Math.round(inset)}px`);
 }
 
 // 字号调节（大字号模式，老年用户友好；zoom 同步放大文字与点击区域）
