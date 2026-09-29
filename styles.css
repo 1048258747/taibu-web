@@ -1665,17 +1665,19 @@ body::before {
 }
 
 .page {
+  /* 只淡入、不做位移：动画里的 transform 会让 .page 成为 fixed 后代的包含块
+     （fill-mode 保留了 transform 时，浏览器按 will-change: transform 处理），
+     而对话页的输入框和「术」弹层都是 .page 内的 fixed 元素，
+     一旦 .page 成为包含块，它们就会被定位到聊天记录末尾、必须滚到底才看得见 */
   animation: page-in 0.34s ease both;
 }
 
 @keyframes page-in {
   from {
     opacity: 0;
-    transform: translateY(8px);
   }
   to {
     opacity: 1;
-    transform: none;
   }
 }
 
