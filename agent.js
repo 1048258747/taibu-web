@@ -86,27 +86,34 @@ async function requestCompletion({ settings, messages, tools, onDelta }) {
     body.tool_choice = "auto";
   }
 
+  // 中转模式下没有 apiKey，改由 settings.headers 携带设备标识等自定义头
+  const headers = { "Content-Type": "application/json", ...(settings.headers || {}) };
+  const apiKey = String(settings.apiKey || "").trim();
+  if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+
   const resp = await fetch(endpointOf(settings), {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${String(settings.apiKey || "").trim()}`,
-    },
+    headers,
     body: JSON.stringify(body),
   });
 
   if (!resp.ok) {
     let message = `接口请求失败（${resp.status}）`;
+    let code = "";
     try {
       const data = await resp.json();
       message = data.error?.message || data.message || message;
+      code = data.error?.code || data.code || "";
     } catch {
       // 保留默认错误信息。
     }
     const error = new Error(message);
     error.status = resp.status;
+    error.code = code;
     throw error;
   }
+
+  settings.onResponse?.(resp);
 
   // 个别网关会改写 content-encoding 导致拿不到流，退回整段 JSON 解析
   if (!resp.body || !resp.body.getReader) {
@@ -201,7 +208,7 @@ export async function runAgent({
   onEvent,
   signal,
 }) {
-  if (!String(settings?.apiKey || "").trim()) {
+  if (!String(settings?.apiKey || "").trim() && !settings?.allowKeyless) {
     throw new Error("请先填写模型接口密钥");
   }
   if (!settings?.model) {

@@ -132,10 +132,52 @@ const ENUM_LABELS = {
 
 // 工具表单字段分组：提升密集表单的可扫描性
 const FIELD_GROUPS = [
-  { key: "birth", label: "出生时间", fields: ["gender", "birthYear", "birthMonth", "birthDay", "birthHour", "birthMinute", "calendarType", "isLeapMonth"] },
-  { key: "place", label: "出生地点", fields: ["birthPlace", "longitude", "latitude", "timezone"] },
+  { key: "birth", label: "出生时间", fields: ["birthYear", "birthMonth", "birthDay", "birthHour", "gender", "calendarType", "isLeapMonth"] },
+  { key: "place", label: "出生地点", fields: ["birthPlace", "longitude", "latitude"] },
   { key: "transit", label: "流运与问题", fields: ["transitTime", "question", "houseSystem", "spreadType", "method", "mode", "numbers", "queries", "yongShenTargets"] },
 ];
+
+// 收进「高级设置」的可选字段：平时不占版面，需要精确输入时再展开
+const ADVANCED_FIELDS = ["birthMinute", "timezone", "detailLevel"];
+
+// 十二时辰：value 取该时辰的中间整点（子时记 0 点），引擎据此推时辰
+const SHICHEN_OPTIONS = [
+  { hour: 0, label: "子时", range: "23:00–01:00" },
+  { hour: 2, label: "丑时", range: "01:00–03:00" },
+  { hour: 4, label: "寅时", range: "03:00–05:00" },
+  { hour: 6, label: "卯时", range: "05:00–07:00" },
+  { hour: 8, label: "辰时", range: "07:00–09:00" },
+  { hour: 10, label: "巳时", range: "09:00–11:00" },
+  { hour: 12, label: "午时", range: "11:00–13:00" },
+  { hour: 14, label: "未时", range: "13:00–15:00" },
+  { hour: 16, label: "申时", range: "15:00–17:00" },
+  { hour: 18, label: "酉时", range: "17:00–19:00" },
+  { hour: 20, label: "戌时", range: "19:00–21:00" },
+  { hour: 22, label: "亥时", range: "21:00–23:00" },
+];
+
+// 任意小时 → 所属时辰序号（0=子时）
+function shichenIndexForHour(hour) {
+  const h = ((Number(hour) % 24) + 24) % 24;
+  return Math.floor(((h + 1) % 24) / 2);
+}
+
+// 出生时辰下拉：把"填 0-23 的数字"换成"选十二时辰"
+function renderShichenField(fieldKey, value) {
+  const label = fieldKey === "birthHour" ? "出生时辰" : LABELS[fieldKey] || fieldKey;
+  const raw = value === "" || value === undefined || value === null ? 12 : Number(value);
+  const idx = shichenIndexForHour(Number.isFinite(raw) ? raw : 12);
+  const options = SHICHEN_OPTIONS.map(
+    (item, i) => `<option value="${item.hour}" ${i === idx ? "selected" : ""}>${item.label}（${item.range}）</option>`
+  ).join("");
+  return `
+    <div class="field">
+      <label for="field-${fieldKey}">${escapeHtml(label)}</label>
+      <select id="field-${fieldKey}" data-field="${fieldKey}" class="shichen-select">${options}</select>
+      <p class="field-hint">记不清准确钟点，选大概时段即可。</p>
+    </div>
+  `;
+}
 
 // 表单分组序号（古籍卷目风格；用大写数字避免"一"被误读为折叠图标）
 const GROUP_NUMERALS = ["壹", "贰", "叁", "肆", "伍"];
@@ -179,6 +221,16 @@ const TOOL_NAMES = {
 const AI_SETTINGS_KEY = "taibu:ai-settings";
 const PROFILES_KEY = "taibu:profiles";
 const ACTIVE_PROFILE_KEY = "taibu:active-profile";
+const DEVICE_ID_KEY = "taibu:device-id";
+const RELAY_QUOTA_KEY = "taibu:relay-quota";
+
+// 中转服务地址：部署好 relay/ 里的服务后填这里（部署方法见 relay/README.md）。
+// 留空则不启用「免费体验」，新用户默认进入本地解读模式。
+// 必须是 HTTPS，否则网页版会被浏览器按混合内容拦截。
+const RELAY_BASE_URL = "";
+
+// 免费体验走的模型：必须是中转服务 ALLOWED_MODELS 白名单里的名字
+const RELAY_MODEL = "deepseek-chat";
 
 const AI_PROVIDERS = {
   deepseek: {
@@ -201,6 +253,20 @@ const AI_PROVIDERS = {
     ],
   },
 };
+
+// 免费体验：服务端持有密钥，客户端只带设备标识，无需配置即可用
+if (RELAY_BASE_URL) {
+  AI_PROVIDERS.relay = {
+    label: "免费体验",
+    baseUrl: RELAY_BASE_URL.replace(/\/+$/, ""),
+    model: RELAY_MODEL,
+    models: [{ model: RELAY_MODEL, label: "免费体验（赠送次数）" }],
+    relay: true,
+  };
+}
+
+// 下拉框顺序：能零配置的排最前
+const AI_PROVIDER_ORDER = RELAY_BASE_URL ? ["relay", "deepseek", "mimo"] : ["deepseek", "mimo"];
 
 const state = {
   tools: [],
@@ -390,15 +456,21 @@ function profileId() {
 }
 
 function profileFromRequest(name, request, existing) {
+  // 0 点是合法的子时，不能用 || 兜底
+  const pickNumber = (value, fallback) => {
+    if (value === undefined || value === null || value === "") return fallback;
+    const n = Number(value);
+    return Number.isFinite(n) ? n : fallback;
+  };
   return {
     id: existing?.id || profileId(),
     name: name.trim() || existing?.name || "未命名档案",
     gender: request.gender || "male",
-    birthYear: Number(request.birthYear) || 1990,
-    birthMonth: Number(request.birthMonth) || 1,
-    birthDay: Number(request.birthDay) || 15,
-    birthHour: Number(request.birthHour) || 12,
-    birthMinute: Number(request.birthMinute) || 0,
+    birthYear: pickNumber(request.birthYear, 1990),
+    birthMonth: pickNumber(request.birthMonth, 1),
+    birthDay: pickNumber(request.birthDay, 15),
+    birthHour: pickNumber(request.birthHour, 12),
+    birthMinute: pickNumber(request.birthMinute, 0),
     calendarType: request.calendarType || "solar",
     isLeapMonth: Boolean(request.isLeapMonth),
     birthPlace: request.birthPlace || "",
@@ -431,6 +503,16 @@ function profileSummary(profile) {
   return `${profile.name} · ${gender} · ${calendar}${profile.birthYear}年${profile.birthMonth}月${profile.birthDay}日`;
 }
 
+// 档案卡用的细节行（不带姓名，附上时辰与出生地）
+function profileDetail(profile) {
+  if (!profile) return "";
+  const gender = profile.gender === "female" ? "女" : "男";
+  const calendar = profile.calendarType === "lunar" ? "农历" : "公历";
+  const time = SHICHEN_OPTIONS[shichenIndexForHour(profile.birthHour ?? 12)].label;
+  const place = profile.birthPlace ? ` · ${profile.birthPlace}` : "";
+  return `${gender} · ${calendar} ${profile.birthYear}年${profile.birthMonth}月${profile.birthDay}日 ${time}${place}`;
+}
+
 function applyProfileToForm(profile) {
   const form = document.querySelector("[data-tool-form]");
   const nameInput = document.querySelector("[data-profile-name]");
@@ -440,6 +522,9 @@ function applyProfileToForm(profile) {
       if (!field) return;
       if (field.type === "checkbox") {
         field.checked = Boolean(value);
+      } else if (key === "birthHour") {
+        // 时辰下拉只认十二个整点，把任意小时归一到所属时辰
+        field.value = String(SHICHEN_OPTIONS[shichenIndexForHour(value ?? 12)].hour);
       } else {
         field.value = value ?? "";
       }
@@ -464,12 +549,18 @@ function saveProfileFromPage() {
   render();
 }
 
+// 没有任何保存记录时（新用户）默认落到「免费体验」，实现零配置可用
+function defaultProviderKey() {
+  return AI_PROVIDERS.relay ? "relay" : "deepseek";
+}
+
 function getAiSettings() {
+  const fallbackKey = defaultProviderKey();
   const fallback = {
-    provider: "deepseek",
+    provider: fallbackKey,
     apiKey: "",
-    model: AI_PROVIDERS.deepseek.model,
-    baseUrl: AI_PROVIDERS.deepseek.baseUrl,
+    model: AI_PROVIDERS[fallbackKey].model,
+    baseUrl: AI_PROVIDERS[fallbackKey].baseUrl,
   };
   try {
     const saved = JSON.parse(localStorage.getItem(AI_SETTINGS_KEY) || "{}");
@@ -488,6 +579,113 @@ function getAiSettings() {
 
 function saveAiSettings(settings) {
   localStorage.setItem(AI_SETTINGS_KEY, JSON.stringify(settings));
+}
+
+// ===== 免费体验（中转服务）=====
+
+function isRelayProvider(settings) {
+  return Boolean(AI_PROVIDERS[(settings || getAiSettings()).provider]?.relay);
+}
+
+// 设备标识：中转服务靠它发放免费次数。只存本机，不含任何个人信息。
+function getDeviceId() {
+  let id = localStorage.getItem(DEVICE_ID_KEY);
+  if (id && id.length >= 8) return id;
+  const rand = window.crypto?.randomUUID
+    ? window.crypto.randomUUID()
+    : `dev-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
+  id = rand;
+  localStorage.setItem(DEVICE_ID_KEY, id);
+  return id;
+}
+
+function getRelayQuota() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(RELAY_QUOTA_KEY) || "{}");
+    return {
+      remaining: Number.isFinite(saved.remaining) ? saved.remaining : null,
+      limit: Number.isFinite(saved.limit) ? saved.limit : null,
+      exhausted: Boolean(saved.exhausted),
+      checkedAt: saved.checkedAt || 0,
+    };
+  } catch {
+    return { remaining: null, limit: null, exhausted: false, checkedAt: 0 };
+  }
+}
+
+function saveRelayQuota(patch) {
+  const next = { ...getRelayQuota(), ...patch, checkedAt: Date.now() };
+  localStorage.setItem(RELAY_QUOTA_KEY, JSON.stringify(next));
+  return next;
+}
+
+// 中转额度用尽 / 本月熔断时，客户端要退回本地解读
+const RELAY_BLOCK_CODES = new Set(["QUOTA_EXHAUSTED", "IP_QUOTA_EXHAUSTED", "BUDGET_EXHAUSTED"]);
+
+function isRelayBlockError(error) {
+  if (!error) return false;
+  if (RELAY_BLOCK_CODES.has(error.code)) return true;
+  return error.status === 429 || error.status === 503;
+}
+
+function relayQuotaText() {
+  const quota = getRelayQuota();
+  if (quota.exhausted) return "免费次数已用完";
+  if (quota.remaining === null) return "剩余次数未知";
+  return `剩余 ${quota.remaining} 次免费体验`;
+}
+
+// 是否走模型：填了自己的密钥，或选了免费体验且额度还没用完
+function aiEnabled() {
+  const settings = getAiSettings();
+  if (isRelayProvider(settings)) return !getRelayQuota().exhausted;
+  return Boolean(settings.apiKey.trim());
+}
+
+// 请求头：中转模式带设备标识与轮次 ID，自带密钥模式带 Authorization
+function aiRequestHeaders(settings, turnId = "") {
+  const headers = { "Content-Type": "application/json" };
+  if (isRelayProvider(settings)) {
+    headers["X-Device-Id"] = getDeviceId();
+    if (turnId) headers["X-Turn-Id"] = turnId;
+  } else {
+    headers.Authorization = `Bearer ${settings.apiKey.trim()}`;
+  }
+  return headers;
+}
+
+// 从响应头读回剩余次数，供界面展示
+function captureRelayQuota(response, settings) {
+  if (!isRelayProvider(settings)) return;
+  const remaining = response.headers.get("x-relay-remaining");
+  if (remaining === null) return;
+  const value = Number(remaining);
+  if (!Number.isFinite(value)) return;
+  saveRelayQuota({ remaining: value, exhausted: value <= 0 });
+}
+
+// 额度耗尽时把状态记下来，后续消息直接走本地解读
+function markRelayExhausted() {
+  saveRelayQuota({ remaining: 0, exhausted: true });
+}
+
+async function refreshRelayQuota() {
+  if (!AI_PROVIDERS.relay) return null;
+  try {
+    const response = await fetch(`${AI_PROVIDERS.relay.baseUrl}/v1/relay/quota`, {
+      headers: { "X-Device-Id": getDeviceId() },
+    });
+    if (!response.ok) return null;
+    const data = await response.json();
+    return saveRelayQuota({
+      remaining: Number(data.remaining) || 0,
+      limit: Number(data.limit) || null,
+      exhausted: (Number(data.remaining) || 0) <= 0,
+    });
+  } catch {
+    // 网络不通时保持上一次的记录，不阻塞启动
+    return null;
+  }
 }
 
 function buildAiPrompt(toolName, item) {
@@ -522,7 +720,7 @@ function getChatMessages(item) {
 
 async function callAiApi(systemPrompt, userText, history = []) {
   const settings = getAiSettings();
-  if (!settings.apiKey.trim()) {
+  if (!aiEnabled()) {
     throw new Error("请先填写模型接口密钥");
   }
 
@@ -546,10 +744,7 @@ async function callAiApi(systemPrompt, userText, history = []) {
   const url = `${baseUrl}/chat/completions`;
   const response = await fetch(url, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${settings.apiKey.trim()}`,
-    },
+    headers: aiRequestHeaders(settings),
     body: JSON.stringify({
       model,
       messages,
@@ -557,15 +752,22 @@ async function callAiApi(systemPrompt, userText, history = []) {
     }),
   });
 
+  captureRelayQuota(response, settings);
+
   if (!response.ok) {
     let message = `接口请求失败（${response.status}）`;
+    let code = "";
     try {
       const data = await response.json();
       message = data.error?.message || data.message || message;
+      code = data.error?.code || "";
     } catch {
       // 保留默认错误信息。
     }
-    throw new Error(message);
+    const error = new Error(message);
+    error.status = response.status;
+    error.code = code;
+    throw error;
   }
 
   const data = await response.json();
@@ -580,7 +782,7 @@ async function callAiApi(systemPrompt, userText, history = []) {
 // 流式请求：OpenAI 兼容（deepseek/mimo）统一由 onDelta 逐段回调。
 async function streamAiReport(systemPrompt, userText, onDelta) {
   const settings = getAiSettings();
-  if (!settings.apiKey.trim()) {
+  if (!aiEnabled()) {
     throw new Error("请先填写模型接口密钥");
   }
   const provider = AI_PROVIDERS[settings.provider];
@@ -595,10 +797,7 @@ async function streamAiReport(systemPrompt, userText, onDelta) {
   const url = `${baseUrl}/chat/completions`;
   const resp = await fetch(url, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${settings.apiKey.trim()}`,
-    },
+    headers: aiRequestHeaders(settings),
     body: JSON.stringify({
       model,
       messages: [
@@ -610,15 +809,22 @@ async function streamAiReport(systemPrompt, userText, onDelta) {
     }),
   });
 
+  captureRelayQuota(resp, settings);
+
   if (!resp.ok) {
     let message = `接口请求失败（${resp.status}）`;
+    let code = "";
     try {
       const data = await resp.json();
       message = data.error?.message || data.message || message;
+      code = data.error?.code || "";
     } catch {
       // 保留默认错误信息。
     }
-    throw new Error(message);
+    const error = new Error(message);
+    error.status = resp.status;
+    error.code = code;
+    throw error;
   }
 
   if (!resp.body || !resp.body.getReader) {
@@ -792,6 +998,328 @@ function verifyChatReading(text, trace) {
   const bad = findUnverifiedTerms(body, corpus, verified);
   if (!bad.length) return body;
   return `${body}\n\n本地核验：解读中提到的「${bad.join("」「")}」未见于本次排盘结果，可能是模型的一般性推论，请以排盘结果为准。`;
+}
+
+// ===== 本地解读兜底 =====
+// 未配置模型时使用：全部内容直接取自引擎的计算结果，不做推测与补充，
+// 因此不存在「编造盘面里没有的内容」的问题。渲染时即时计算，不落盘。
+const LOCAL_DISCLAIMER =
+  "本段解读由本地规则依据计算结果生成，未经 AI 润色，仅供传统文化研究与娱乐参考。";
+const LOCAL_UPGRADE_HINT = "配置模型后可获得结合档案的逐条解读，并能就盘面继续追问。";
+
+const WU_XING_COLORS = {
+  金: "白、银、金",
+  木: "绿、青",
+  水: "黑、蓝",
+  火: "红、紫",
+  土: "黄、棕",
+};
+
+function hasAiKey() {
+  return aiEnabled();
+}
+
+// 无模型能力时的引导块：区分「还没配过」和「免费次数用完」两种情况
+function localReadingHintBlock() {
+  const settings = getAiSettings();
+  if (isRelayProvider(settings) && getRelayQuota().exhausted) {
+    return `
+      <div class="local-reading-hint">
+        <p>免费体验次数已用完，当前为本地解读：内容全部取自计算结果。${LOCAL_UPGRADE_HINT}</p>
+        <button class="primary-button" data-action="ai-settings">填写自己的密钥</button>
+      </div>
+    `;
+  }
+  return `
+    <div class="local-reading-hint">
+      <p>当前为本地解读：内容全部取自计算结果，不额外调用模型。${LOCAL_UPGRADE_HINT}</p>
+      <button class="primary-button" data-action="ai-settings">配置模型</button>
+    </div>
+  `;
+}
+
+// 解读区副标题：说明这一段的解读来源
+function aiModeSubtitle() {
+  const settings = getAiSettings();
+  if (isRelayProvider(settings)) {
+    return getRelayQuota().exhausted
+      ? "免费次数已用完，以下为本地解读。"
+      : `免费体验中（${relayQuotaText()}），AI 严格依据上方计算结果生成。`;
+  }
+  return settings.apiKey.trim()
+    ? "AI 严格依据上方计算结果生成，不编造未计算的内容。"
+    : "本地解读严格依据上方计算结果生成，不编造未计算的内容。";
+}
+
+function joinOr(items, fallback = "—") {
+  const list = (items || []).filter(Boolean).map(String);
+  return list.length ? list.join("、") : fallback;
+}
+
+function bulletLines(lines, fallback = "- —") {
+  const list = (lines || []).filter(Boolean);
+  return list.length ? list.map((line) => `- ${line}`).join("\n") : fallback;
+}
+
+// 今日报告：6 节结构，与 AI 解读的格式约定保持一致
+function buildLocalDailyReading(report) {
+  const d = buildDailyAiData(report);
+  const raw = extractAlmanacData(report.almanac);
+  const wuXing = GAN_WU_XING[raw.dayMaster] || "";
+  const starWuXing = d.日九星五行 || wuXing;
+  const colors = WU_XING_COLORS[starWuXing] || "";
+  const dirs = d.方位 || {};
+  const luckyHours = d.吉时 || [];
+  const luckText = String(d.值神 || "");
+  const luckTone = luckText.includes("吉") ? "偏吉" : luckText.includes("凶") ? "偏凶" : "平和";
+
+  const overview = [
+    `今日为 ${d.日期}（${d.农历 || "农历未提供"}${d.生肖 ? `，${d.生肖}年` : ""}）。`,
+    raw.dayMaster
+      ? `您的日主为 ${raw.dayMaster}${wuXing ? `，属${wuXing}` : ""}，今日流日十神为「${d.流日十神 || "未计算"}」。`
+      : "",
+    d.值神 ? `值日天神为 ${d.值神}，今日基调${luckTone}。` : "",
+    d.纳音 ? `当日纳音为 ${d.纳音}。` : "",
+    `黄历所宜：${joinOr((d.宜 || []).slice(0, 5))}；所忌：${joinOr((d.忌 || []).slice(0, 5))}。`,
+  ]
+    .filter(Boolean)
+    .join("");
+
+  const yiLines = (d.宜 || []).map((item) => `${item}（依据：当日黄历宜神所宜）`);
+  const jiLines = (d.忌 || []).map((item) => `${item}（依据：当日黄历忌神所忌）`);
+
+  const hourLines = luckyHours.length
+    ? luckyHours.map((hour) => `吉时 ${hour}（依据：当日十二时辰天神吉凶判定）`)
+    : ["当日十二时辰中未出现吉时（依据：当日十二时辰天神吉凶判定）"];
+  const dirLines = [
+    ["财神", dirs.caiShen],
+    ["喜神", dirs.xiShen],
+    ["福神", dirs.fuShen],
+    ["阳贵", dirs.yangGui],
+    ["阴贵", dirs.yinGui],
+  ]
+    .filter(([, value]) => value)
+    .map(([label, value]) => `${label}方位在${value}（依据：当日黄历方位）`);
+
+  const outfit =
+    starWuXing && colors
+      ? [
+          `今日${d.日九星五行 ? "日九星" : "日主"}五行属${starWuXing}，传统五行配色对应「${colors}」，可作为穿搭主色参考。${
+            d.日九星颜色 ? `引擎标注的当日颜色为「${d.日九星颜色}」。` : ""
+          }`,
+          "",
+          "五行配色属传统文化参考，不是确定预测。",
+        ].join("\n")
+      : "计算结果中未提供当日五行信息，暂无法给出配色参考。";
+
+  const remind = bulletLines(
+    [
+      d.冲煞 ? `冲煞：${d.冲煞}（依据：当日黄历冲煞）` : "",
+      (d.凶煞 || []).length ? `凶煞宜忌：${d.凶煞.join("、")}（依据：当日凶煞）` : "",
+      (d.吉神 || []).length ? `吉神宜趋：${d.吉神.join("、")}（依据：当日吉神）` : "",
+      d.彭祖百忌 ? `彭祖百忌：${d.彭祖百忌}（依据：当日彭祖百忌）` : "",
+      d.日建 ? `值日：${d.日建}（依据：当日建除十二神）` : "",
+    ],
+    "- 当日计算结果中未列出额外的冲煞与禁忌。"
+  );
+
+  return [
+    "## 今日概要",
+    "",
+    overview,
+    "",
+    "## 宜忌与行事",
+    "",
+    "**宜**",
+    bulletLines(yiLines),
+    "",
+    "**忌**",
+    bulletLines(jiLines),
+    "",
+    "## 吉时与方位",
+    "",
+    bulletLines([...hourLines, ...dirLines], "- 当日计算结果中未列出吉时与方位。"),
+    "",
+    "## 穿搭与颜色",
+    "",
+    outfit,
+    "",
+    "## 今日提醒",
+    "",
+    remind,
+    "",
+    "## 温馨提示",
+    "",
+    LOCAL_DISCLAIMER,
+  ].join("\n");
+}
+
+// 工具结果：5 节结构。结构化数据是「中文区块名 → 对象/数组」，按区块逐个展开。
+const LOCAL_SECTION_LIMIT = 12;
+const LOCAL_ENTRY_LIMIT = 6;
+const LOCAL_ADVICE_HINT = /宜|吉|贵|禄|合|旺|喜|德|福|天乙|长生|帝旺/;
+const LOCAL_CAUTION_HINT = /冲|刑|害|破|空|煞|凶|忌|克|刃|墓|绝|劫/;
+// 专有名词会撞上关键字：宫名（官禄、福德）撞吉字，星曜名（天冲星）撞「冲」字。
+// 值匹配时把这些排除，只按键名匹配，否则会误报。
+const PALACE_NAMES = new Set([
+  "命宫", "兄弟", "夫妻", "子女", "财帛", "疾厄", "迁移", "交友", "仆役", "官禄", "田宅", "福德", "父母",
+]);
+
+function isProperNoun(value) {
+  return PALACE_NAMES.has(value) || /[星宫]$/.test(value);
+}
+
+function scalarEntries(node) {
+  if (!node || typeof node !== "object" || Array.isArray(node)) return [];
+  return Object.entries(node).filter(([, value]) => value === null || typeof value !== "object");
+}
+
+function flattenStructured(node, path = [], depth = 0) {
+  const out = [];
+  if (!node || typeof node !== "object" || depth > 4) return out;
+  if (Array.isArray(node)) {
+    node.slice(0, 12).forEach((child, index) => {
+      if (child && typeof child === "object") {
+        out.push(...flattenStructured(child, [...path, `#${index + 1}`], depth + 1));
+      } else if (child !== null && child !== undefined && String(child).trim()) {
+        // 字符串数组（如八字的干支关系、黄历的吉神）没有子键，归属到所在区块
+        out.push({ path, value: String(child).trim() });
+      }
+    });
+    return out;
+  }
+  for (const [key, value] of Object.entries(node)) {
+    if (value && typeof value === "object") {
+      out.push(...flattenStructured(value, [...path, key], depth + 1));
+    } else if (value !== null && value !== undefined && String(value).trim()) {
+      out.push({ path: [...path, key], value: String(value).trim() });
+    }
+  }
+  return out;
+}
+
+// 嵌套值（如藏干、核心基调）展平成一行文字，超长截断，避免关键解读变成一堵墙
+function renderValue(value) {
+  if (Array.isArray(value)) {
+    return value.map(renderValue).filter(Boolean).join("、");
+  }
+  if (value && typeof value === "object") {
+    return Object.entries(value)
+      .map(([key, child]) => {
+        const text = renderValue(child);
+        return text ? `${key} ${text}` : "";
+      })
+      .filter(Boolean)
+      .join("；");
+  }
+  return value === null || value === undefined ? "" : String(value);
+}
+
+// 路径里的「#1」这类数组下标对读者无意义，展示时去掉
+function displayPath(path) {
+  const named = path.filter((segment) => !/^#\d+$/.test(segment));
+  return named.slice(-2).join("·") || String(path[path.length - 1]);
+}
+
+function renderStructuredBlock(name, node) {
+  if (Array.isArray(node)) {
+    const lines = node
+      .slice(0, LOCAL_SECTION_LIMIT)
+      .map((item) => {
+        if (!item || typeof item !== "object") return String(item ?? "");
+        const entries = Object.entries(item).filter(([, value]) => renderValue(value));
+        if (!entries.length) return "";
+        const head = renderValue(entries[0][1]).slice(0, 40);
+        const tail = entries
+          .slice(1)
+          .map(([key, value]) => `${key} ${renderValue(value)}`)
+          .join(" / ")
+          .slice(0, 160);
+        return `${head}${tail ? `（${tail}）` : ""}`;
+      })
+      .filter(Boolean);
+    return lines.length ? `**${name}**\n${bulletLines(lines)}` : "";
+  }
+  const entries = Object.entries(node || {}).filter(([, value]) => renderValue(value));
+  if (!entries.length) return "";
+  return `**${name}**\n${entries.map(([key, value]) => `- ${key}：${renderValue(value).slice(0, 200)}`).join("\n")}`;
+}
+
+function buildLocalToolReading(toolName, item) {
+  const structured = item?.response?.structured || null;
+  const title = toolLabel(toolName);
+
+  if (!structured || typeof structured !== "object" || !Object.keys(structured).length) {
+    return [
+      "## 排盘概览",
+      "",
+      `本次${title}未返回结构化数据，可直接查看上方排盘结果原文。`,
+      "",
+      "## 温馨提示",
+      "",
+      LOCAL_DISCLAIMER,
+    ].join("\n");
+  }
+
+  const blocks = Object.entries(structured);
+  const flat = flattenStructured(structured);
+  const highlights = blocks
+    .slice(0, 3)
+    .map(([, node]) =>
+      scalarEntries(node)
+        .slice(0, 4)
+        .map(([key, value]) => `${key} ${value}`)
+        .join("，")
+    )
+    .filter(Boolean)
+    .join("；");
+
+  const pick = (pattern) => {
+    const seen = new Set();
+    return flat
+      .filter((entry) => {
+        if (pattern.test(entry.path.join(""))) return true;
+        if (entry.value.length > 12 || isProperNoun(entry.value)) return false;
+        return pattern.test(entry.value);
+      })
+      .map((entry) => `${displayPath(entry.path)}：${entry.value}`)
+      .filter((line) => {
+        if (seen.has(line)) return false;
+        seen.add(line);
+        return true;
+      })
+      .slice(0, LOCAL_ENTRY_LIMIT);
+  };
+
+  const advice = pick(LOCAL_ADVICE_HINT);
+  const caution = pick(LOCAL_CAUTION_HINT);
+  const detail = blocks.map(([name, node]) => renderStructuredBlock(name, node)).filter(Boolean);
+
+  return [
+    "## 排盘概览",
+    "",
+    `本次${title}共计算 ${blocks.length} 个部分：${blocks.map(([name]) => name).join("、")}。${highlights ? `要点：${highlights}。` : ""}`,
+    "",
+    "## 关键解读",
+    "",
+    detail.length ? detail.join("\n\n") : "本次结果中没有可展开的结构化字段。",
+    "",
+    "## 建议",
+    "",
+    advice.length
+      ? bulletLines(advice)
+      : "- 本次结果中没有可直接提炼为建议的宜忌类字段。",
+    "",
+    "## 需要注意",
+    "",
+    caution.length
+      ? bulletLines(caution)
+      : "- 本次结果中没有可直接提炼为注意事项的冲煞类字段。",
+    "",
+    "## 温馨提示",
+    "",
+    LOCAL_DISCLAIMER,
+  ].join("\n");
 }
 
 const AI_READING_TEMPLATE = [
@@ -1073,12 +1601,20 @@ function setActiveChatId(id) {
 }
 
 function getChatLog() {
-  const log = readJson(chatMessagesKey(getActiveChatId()), []);
+  return getChatLogFor(getActiveChatId());
+}
+
+function getChatLogFor(id) {
+  const log = readJson(chatMessagesKey(id), []);
   return Array.isArray(log) ? log : [];
 }
 
 function saveChatLog(log) {
-  const id = getActiveChatId();
+  saveChatLogFor(getActiveChatId(), log);
+}
+
+// 指定会话写入：生成中用户可能切到别的会话，落库要写回原来那段对话
+function saveChatLogFor(id, log) {
   const trimmed = log.slice(-CHAT_LOG_LIMIT);
   localStorage.setItem(chatMessagesKey(id), JSON.stringify(trimmed));
   if (!trimmed.length) return;
@@ -1157,7 +1693,8 @@ const CHAT_RAW_KEEP = 2;
 const CHAT_RAW_LIMIT = 8000;
 
 function chatHistoryForApi(log) {
-  const recent = log.slice(-CHAT_HISTORY_LIMIT);
+  // 生成中的半截回复不算历史（还没定稿），别回灌给模型
+  const recent = log.filter((entry) => !entry.streaming).slice(-CHAT_HISTORY_LIMIT);
   const assistantIndexes = recent
     .map((entry, index) => (entry.role === "user" ? -1 : index))
     .filter((index) => index >= 0);
@@ -1203,6 +1740,25 @@ function renderChatMessage(entry) {
       </div>
     `;
   }
+  // 被中断（切后台/熄屏/切页面时连接断了）：显示已生成的部分 + 重试，而不是留一片空白
+  if (entry.interrupted) {
+    const interruptedTools = (entry.tools || []).map(renderToolTrace).join("");
+    const interruptedBody = entry.content
+      ? `<div class="chat-bubble-body markdown-render">${renderMarkdown(entry.content)}</div>`
+      : "";
+    const reason = entry.errorText ? `：${escapeHtml(entry.errorText)}` : "";
+    return `
+      <div class="chat-row assistant">
+        <span class="chat-avatar" aria-hidden="true">卜</span>
+        <div class="chat-bubble assistant">
+          ${interruptedTools}
+          <div class="chat-notice is-error">这次生成中断了${reason}，可以重新生成。</div>
+          ${interruptedBody}
+          <button class="secondary-button chat-retry-button" data-action="chat-retry" data-id="${escapeHtml(entry.id || "")}">重新生成</button>
+        </div>
+      </div>
+    `;
+  }
   const tools = (entry.tools || []).map(renderToolTrace).join("");
   const body = entry.error
     ? `<div class="chat-bubble-body chat-error-text">${escapeHtml(entry.content)}</div>`
@@ -1235,14 +1791,25 @@ function chatQuickChips() {
 
 function renderChatHero() {
   const active = getActiveProfile();
-  const hasKey = Boolean(getAiSettings().apiKey.trim());
+  const settings = getAiSettings();
+  const hasKey = aiEnabled();
+  const relay = isRelayProvider(settings);
   const title = active ? `你好，${escapeHtml(active.name)}` : "你好，我是赛博玄学助手";
   const subtitle = active
-    ? "已记下你的出生信息，说一句话就能排盘解盘。"
-    : "说一句话就能排盘：八字、紫微、六爻、塔罗……需要出生信息时我会问你。";
-  const notice = hasKey
-    ? ""
-    : `<div class="chat-notice">尚未配置 AI 模型，<button class="link-button" data-action="ai-settings">前往「我的 → AI 模型」</button>设置密钥后即可对话。</div>`;
+    ? hasKey
+      ? "已记下你的出生信息，说一句话就能排盘解盘。"
+      : "已记下你的出生信息，说一句话就能排盘并给出本地解读。"
+    : hasKey
+      ? "说一句话就能排盘：八字、紫微、六爻、塔罗……需要出生信息时我会问你。"
+      : "说一句话就能排盘：今日运势、八字、紫微、星盘、塔罗。";
+  let notice = "";
+  if (!hasKey && relay) {
+    notice = `<div class="chat-notice">免费体验次数已用完，已切换为本地解读。<button class="link-button" data-action="ai-settings">填写自己的密钥</button>可继续在对话里问任意问题。</div>`;
+  } else if (!hasKey) {
+    notice = `<div class="chat-notice">当前为本地模式：可以直接问今日运势、八字、紫微、星盘、塔罗。<button class="link-button" data-action="ai-settings">配置模型</button>后可问任意问题。</div>`;
+  } else if (relay) {
+    notice = `<div class="chat-notice">免费体验中：${escapeHtml(relayQuotaText())}，用完可到「我的」填写自己的密钥。</div>`;
+  }
   return `
     <div class="chat-hero">
       <div class="chat-hero-seal">${BRAND_MARK}</div>
@@ -1253,10 +1820,146 @@ function renderChatHero() {
   `;
 }
 
+// ===== 生成中的对话轮次 =====
+// 这轮状态原先只活在 DOM 和闭包里：生成中切到工具页再回来、切后台熄屏、WebView 被系统
+// 回收后重载，正在生成的气泡会消失、回复也跟着丢。现在把这一轮提到模块级，并把已生成的
+// 部分节流写进对话记录（带 streaming 标记），重绘/重载后都能接着显示，断了还能一键重试。
+let chatTurn = null;
+
+function liveToolCardHtml(tool) {
+  const meta = getToolMeta(tool.name);
+  const running = tool.ok === undefined;
+  const stateText = running ? "排盘中…" : tool.ok ? "已排盘" : "失败";
+  const cls = running ? " is-running" : tool.ok ? "" : " is-error";
+  return `
+    <div class="chat-tool-card${cls}">
+      <span class="chat-tool-icon" style="--card-tint:${meta.tint};--card-ink:${meta.ink}">${escapeHtml(meta.icon)}</span>
+      <span class="chat-tool-name">${escapeHtml(toolLabel(tool.name))}</span>
+      <span class="chat-tool-state">${stateText}</span>
+    </div>
+  `;
+}
+
+// 进行中气泡的完整 HTML：切页面回来时由 renderChat 重建；paintLive 只做局部更新，
+// 不整块重建是为了保住打字动画（重建会让动画每次从头播）。
+function liveTurnHtml() {
+  if (!chatTurn) return "";
+  const notices = (chatTurn.notices || [])
+    .map((message) => `<div class="chat-notice">${escapeHtml(message)}</div>`)
+    .join("");
+  const tools = (chatTurn.tools || []).map(liveToolCardHtml).join("");
+  return `
+    <div class="chat-row assistant" data-chat-live>
+      <span class="chat-avatar" aria-hidden="true">卜</span>
+      <div class="chat-bubble assistant is-live">
+        <div class="chat-tools" data-live-tools>${notices}${tools}</div>
+        <div class="chat-bubble-body markdown-render" data-live-body>${renderMarkdown(chatTurn.buffer || "")}</div>
+        <div class="typing-row">
+          <div class="typing-indicator" data-live-typing${chatTurn.typing ? "" : " hidden"}><span></span><span></span><span></span></div>
+          <span class="typing-hint" data-live-hint${chatTurn.hint ? "" : " hidden"}>${escapeHtml(chatTurn.hint || "")}</span>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function paintLive() {
+  if (!chatTurn) return;
+  const toolsEl = app.querySelector("[data-live-tools]");
+  if (toolsEl) {
+    const notices = (chatTurn.notices || [])
+      .map((message) => `<div class="chat-notice">${escapeHtml(message)}</div>`)
+      .join("");
+    toolsEl.innerHTML = notices + (chatTurn.tools || []).map(liveToolCardHtml).join("");
+  }
+  const bodyEl = app.querySelector("[data-live-body]");
+  if (bodyEl) bodyEl.innerHTML = renderMarkdown(chatTurn.buffer || "");
+  const typingEl = app.querySelector("[data-live-typing]");
+  if (typingEl) typingEl.hidden = !chatTurn.typing;
+  const hintEl = app.querySelector("[data-live-hint]");
+  if (hintEl) {
+    hintEl.textContent = chatTurn.hint || "";
+    hintEl.hidden = !chatTurn.hint;
+  }
+}
+
+function writeChatTurnEntry(entryId, entry, chatId) {
+  const id = chatId || getActiveChatId();
+  const log = getChatLogFor(id);
+  const index = log.findIndex((item) => item.id === entryId);
+  const merged = { ...entry, id: entryId };
+  if (index >= 0) log[index] = merged;
+  else log.push(merged);
+  saveChatLogFor(id, log);
+}
+
+function removeChatEntry(entryId, chatId) {
+  const id = chatId || getActiveChatId();
+  saveChatLogFor(id, getChatLogFor(id).filter((entry) => entry.id !== entryId));
+}
+
+// 把已生成的部分落库：熄屏/切后台被系统掐断连接、WebView 被回收重载后，内容不丢
+function persistChatTurnPartial() {
+  if (!chatTurn) return;
+  writeChatTurnEntry(
+    chatTurn.entryId,
+    {
+      role: "assistant",
+      content: chatTurn.buffer,
+      streaming: true,
+      tools: (chatTurn.tools || []).filter((tool) => tool.ok !== undefined),
+      retryText: chatTurn.userText,
+      time: new Date().toISOString(),
+    },
+    chatTurn.chatId
+  );
+}
+
+// 启动时把上次没跑完的 streaming 条目定格为「已中断」，
+// 否则每次启动都会误判成「有进行中的轮次」而不开新会话
+function finalizeStaleTurns() {
+  const log = getChatLog();
+  if (!log.some((entry) => entry && entry.streaming)) return false;
+  saveChatLog(log.map((entry) => (entry.streaming ? { ...entry, streaming: false, interrupted: true } : entry)));
+  return true;
+}
+
+// 重试被中断的一轮：删掉半截回复，用同一个提问重新生成（用户消息不重复记）
+function retryChatTurn(entryId) {
+  if (chatBusy) return;
+  const log = getChatLog();
+  const index = log.findIndex((entry) => entry.id === entryId);
+  if (index < 0) return;
+  let question = log[index].retryText || "";
+  if (!question) {
+    for (let i = index - 1; i >= 0; i--) {
+      if (log[i].role === "user") {
+        question = log[i].content;
+        break;
+      }
+    }
+  }
+  log.splice(index, 1);
+  saveChatLog(log);
+  render();
+  if (!question) return;
+  if (hasAiKey()) {
+    streamAgentReply(question, `t-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`);
+  } else {
+    localChatReply(question);
+  }
+}
+
 function renderChat() {
   const log = getChatLog();
+  const live = chatTurn && chatTurn.chatId === getActiveChatId() ? liveTurnHtml() : "";
+  // 进行中的那一轮由 liveTurnHtml 画，别在记录里重复画一遍
+  const stream = log
+    .filter((entry) => !(chatTurn && entry.id === chatTurn.entryId))
+    .map(renderChatMessage)
+    .join("");
   const hasLog = log.length > 0;
-  const stream = hasLog ? log.map(renderChatMessage).join("") : renderChatHero();
+  const body = hasLog ? stream : renderChatHero();
   const loadingHint = state.loading
     ? `<div class="chat-notice">正在加载排盘工具…</div>`
     : state.error
@@ -1271,7 +1974,7 @@ function renderChat() {
           <span class="chat-bar-title">${escapeHtml(hasLog ? chatSessionTitle(log) : "新对话")}</span>
           <button class="chat-bar-button" data-action="chat-new">新会话</button>
         </div>
-        <div class="chat-stream${hasLog ? "" : " is-empty"}" data-chat-stream>${stream}${loadingHint}</div>
+        <div class="chat-stream${hasLog ? "" : " is-empty"}" data-chat-stream>${body}${live}${loadingHint}</div>
         <div class="chat-composer">
           <div class="chat-input-row">
             <button class="icon-button chat-tool-button" data-action="chat-sheet" aria-label="快捷开始：推荐问句与排盘工具">术</button>
@@ -1628,130 +2331,131 @@ async function sendChatMessage(rawText) {
   if (!text || chatBusy) return;
   if (voiceListening) stopVoiceInput();
 
-  const settings = getAiSettings();
-  if (!settings.apiKey.trim()) {
-    window.location.hash = "#/ai";
-    return;
-  }
-
   const log = getChatLog();
   log.push({ role: "user", content: text, time: new Date().toISOString() });
   saveChatLog(log);
   render();
-  await streamAgentReply(text);
+  if (hasAiKey()) {
+    // 一次提问内的多轮工具调用共用一个轮次 ID，中转服务只扣一次免费额度
+    const turnId = `t-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    const outcome = await streamAgentReply(text, turnId);
+    if (outcome === "relay-blocked") {
+      await localChatReply(text, "免费体验次数已用完，这次改用本地解读。");
+    }
+    return;
+  }
+  await localChatReply(text);
 }
 
-async function streamAgentReply(userText) {
-  const stream = app.querySelector("[data-chat-stream]");
-  if (!stream) return;
+// 生成期间持原生「部分唤醒锁」（仅 APK 有 AndroidBridge）：熄屏/切后台时 CPU 不休眠，
+// 流式连接不会被系统掐断。浏览器 / PWA 没有这个桥，调用是空操作。
+// 用计数而非布尔，避免对话与今日报告同时生成时互相把锁提前放掉。
+let nativeGenCount = 0;
+function setNativeGenerating(on) {
+  nativeGenCount += on ? 1 : -1;
+  if (nativeGenCount < 0) nativeGenCount = 0;
+  try {
+    if (window.AndroidBridge && typeof window.AndroidBridge.setGenerating === "function") {
+      window.AndroidBridge.setGenerating(nativeGenCount > 0);
+    }
+  } catch (error) {
+    // 桥调用失败不影响主流程
+  }
+}
 
+async function streamAgentReply(userText, turnId = "") {
   const settings = getAiSettings();
   chatBusy = true;
+  setNativeGenerating(true);
+
+  // 把这一轮提到模块级：切页面/重绘/切后台都不会丢，回来还能看到进行中的内容
+  chatTurn = {
+    chatId: getActiveChatId(),
+    entryId: `a-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+    userText,
+    buffer: "",
+    tools: [],
+    notices: [],
+    hint: "正在理解你的问题…",
+    typing: true,
+  };
+  render();
   setChatComposerBusy(true);
+  scrollChatToEnd();
 
-  const row = document.createElement("div");
-  row.className = "chat-row assistant";
-  row.innerHTML = `
-    <span class="chat-avatar" aria-hidden="true">卜</span>
-    <div class="chat-bubble assistant is-live">
-      <div class="chat-tools" data-live-tools></div>
-      <div class="chat-bubble-body markdown-render" data-live-body></div>
-      <div class="typing-row">
-        <div class="typing-indicator" data-live-typing><span></span><span></span><span></span></div>
-        <span class="typing-hint" data-live-hint></span>
-      </div>
-    </div>
-  `;
-  stream.appendChild(row);
-
-  const bubble = row.querySelector(".chat-bubble");
-  const liveTools = bubble.querySelector("[data-live-tools]");
-  const liveBody = bubble.querySelector("[data-live-body]");
-  const liveTyping = bubble.querySelector("[data-live-typing]");
-  const liveHint = bubble.querySelector("[data-live-hint]");
-  let buffer = "";
   let paintTimer = 0;
   let lastPaint = 0;
   let lastScroll = 0;
+  let lastPersist = 0;
 
   // 长解读时每帧全量重解析 markdown + 重建 DOM 会越来越卡，节流到约 80ms 一次；
   // 流结束后 finally 里的 render() 会用落库内容整体重绘，所以尾部不会丢。
   const PAINT_INTERVAL_MS = 80;
 
-  const paint = () => {
-    paintTimer = 0;
-    lastPaint = Date.now();
-    if (!liveBody.isConnected) return;
-    liveBody.innerHTML = renderMarkdown(buffer);
-    const now = Date.now();
-    if (now - lastScroll > 200) {
-      lastScroll = now;
-      scrollChatToEnd();
-    }
-  };
   const schedulePaint = () => {
     if (paintTimer) return;
-    paintTimer = setTimeout(paint, Math.max(0, PAINT_INTERVAL_MS - (Date.now() - lastPaint)));
-  };
-
-  const setHint = (text) => {
-    if (!liveHint) return;
-    liveHint.textContent = text;
-    liveHint.hidden = !text;
+    paintTimer = setTimeout(() => {
+      paintTimer = 0;
+      lastPaint = Date.now();
+      paintLive();
+      const now = Date.now();
+      if (now - lastScroll > 200) {
+        lastScroll = now;
+        scrollChatToEnd();
+      }
+    }, Math.max(0, PAINT_INTERVAL_MS - (Date.now() - lastPaint)));
   };
 
   const onEvent = (event) => {
+    if (!chatTurn) return;
     if (event.type === "round") {
-      buffer = "";
-      liveBody.innerHTML = "";
-      liveTyping.hidden = false;
-      setHint(event.round > 0 ? "正在整理解读…" : "正在理解你的问题…");
+      chatTurn.buffer = "";
+      chatTurn.typing = true;
+      chatTurn.hint = event.round > 0 ? "正在整理解读…" : "正在理解你的问题…";
+      paintLive();
       return;
     }
     if (event.type === "delta") {
-      buffer += event.text;
-      liveTyping.hidden = true;
-      setHint("");
+      chatTurn.buffer += event.text;
+      chatTurn.typing = false;
+      chatTurn.hint = "";
       schedulePaint();
+      // 边生成边落库：熄屏/切后台被系统掐断时，用户至少能看到已生成的部分
+      const now = Date.now();
+      if (now - lastPersist > 400) {
+        lastPersist = now;
+        persistChatTurnPartial();
+      }
       return;
     }
     if (event.type === "tool") {
-      const meta = getToolMeta(event.name);
-      const card = document.createElement("div");
-      card.className = "chat-tool-card is-running";
-      card.innerHTML = `
-        <span class="chat-tool-icon" style="--card-tint:${meta.tint};--card-ink:${meta.ink}">${escapeHtml(meta.icon)}</span>
-        <span class="chat-tool-name">${escapeHtml(toolLabel(event.name))}</span>
-        <span class="chat-tool-state">排盘中…</span>
-      `;
-      liveTools.appendChild(card);
-      liveTyping.hidden = false;
-      setHint("正在排盘…");
+      chatTurn.tools.push({ name: event.name, ok: undefined });
+      chatTurn.typing = true;
+      chatTurn.hint = "正在排盘…";
+      paintLive();
       scrollChatToEnd();
       return;
     }
     if (event.type === "tool-done") {
-      const card = liveTools.lastElementChild;
-      if (card) {
-        card.classList.remove("is-running");
-        if (!event.ok) card.classList.add("is-error");
-        const stateEl = card.querySelector(".chat-tool-state");
-        if (stateEl) stateEl.textContent = event.ok ? "已排盘" : "失败";
-      }
+      const pending = chatTurn.tools.filter((tool) => tool.name === event.name && tool.ok === undefined).pop();
+      if (pending) pending.ok = event.ok;
+      paintLive();
       return;
     }
     if (event.type === "notice") {
-      const notice = document.createElement("div");
-      notice.className = "chat-notice";
-      notice.textContent = event.message;
-      liveTools.appendChild(notice);
+      chatTurn.notices.push(event.message);
+      paintLive();
     }
   };
 
-  let trace = [];
   try {
     const result = await runAgent({
-      settings,
+      settings: {
+        ...settings,
+        allowKeyless: isRelayProvider(settings),
+        headers: aiRequestHeaders(settings, turnId),
+        onResponse: (resp) => captureRelayQuota(resp, settings),
+      },
       systemPrompt: buildAgentSystemPrompt(),
       history: chatHistoryForApi(getChatLog().slice(0, -1)),
       userText,
@@ -1759,32 +2463,193 @@ async function streamAgentReply(userText) {
       executeTool: executeAgentTool,
       onEvent,
     });
-    trace = result.trace || [];
-    const draftText = (result.text || buffer).trim() || "（模型没有返回内容）";
+    const trace = result.trace || [];
+    const draftText = (result.text || chatTurn.buffer).trim() || "（模型没有返回内容）";
     // 落库前做本地核验：把解读里查不到出处的术数名词就地标注（只追加说明，不改写模型结论）
     const finalText = verifyChatReading(draftText, trace);
     const parts = trace
       .filter((item) => item.ok)
       .map((item) => `【排盘结果 · ${toolLabel(item.name)}】\n${item.text}`);
-    const log = getChatLog();
-    log.push({
-      role: "assistant",
-      content: finalText,
-      raw: parts.length ? `${parts.join("\n\n")}\n\n【解读】\n${finalText}` : finalText,
-      tools: trace.map((item) => ({ name: item.name, ok: item.ok, text: item.text })),
-      time: new Date().toISOString(),
-    });
-    saveChatLog(log);
+    writeChatTurnEntry(
+      chatTurn.entryId,
+      {
+        role: "assistant",
+        content: finalText,
+        raw: parts.length ? `${parts.join("\n\n")}\n\n【解读】\n${finalText}` : finalText,
+        tools: trace.map((item) => ({ name: item.name, ok: item.ok, text: item.text })),
+        time: new Date().toISOString(),
+      },
+      chatTurn.chatId
+    );
   } catch (error) {
+    // 免费体验用完 / 服务端熔断：不留错误气泡，交给本地解读接管
+    if (isRelayProvider(settings) && isRelayBlockError(error)) {
+      markRelayExhausted();
+      removeChatEntry(chatTurn.entryId, chatTurn.chatId);
+      return "relay-blocked";
+    }
+    // 切后台/熄屏/切页面时连接被掐断会走到这里：保留已生成的部分，给一个「重新生成」
+    writeChatTurnEntry(
+      chatTurn.entryId,
+      {
+        role: "assistant",
+        content: chatTurn.buffer.trim(),
+        interrupted: true,
+        errorText: error.message,
+        tools: chatTurn.tools.filter((tool) => tool.ok !== undefined),
+        retryText: userText,
+        time: new Date().toISOString(),
+      },
+      chatTurn.chatId
+    );
+  } finally {
+    if (paintTimer) clearTimeout(paintTimer);
+    paintTimer = 0;
+    chatTurn = null;
+    chatBusy = false;
+    setNativeGenerating(false);
+    render();
+    scrollChatToEnd();
+  }
+}
+
+// ===== 本地模式的对话 =====
+// 没有模型就没有意图理解能力，这里只做「明确提到工具名 / 今日黄历」的关键词路由：
+// 命中不了就给出引导，不猜、不乱调工具。
+const LOCAL_INTENTS = [
+  { tool: "almanac", pattern: /今日|今天|明天|黄历|宜忌|吉时|方位|运势/ },
+  { tool: "ziwei", pattern: /紫微|斗数|命宫|主星|五行局/ },
+  { tool: "bazi", pattern: /八字|四柱|日主|十神|命盘/ },
+  { tool: "astrology", pattern: /星盘|占星|上升星座/ },
+  { tool: "tarot", pattern: /塔罗|抽牌|牌阵/ },
+  { tool: "liuyao", pattern: /六爻|起卦|摇卦|卦象/ },
+  { tool: "meihua", pattern: /梅花/ },
+  { tool: "qimen", pattern: /奇门|遁甲/ },
+  { tool: "daliuren", pattern: /大六壬|六壬/ },
+  { tool: "xiaoliuren", pattern: /小六壬/ },
+  { tool: "taiyi", pattern: /太乙/ },
+];
+
+// 本地模式只跑「有档案即可」或「零参数」的工具；其余工具参数需要用户自己填，引导去工具页
+const LOCAL_BIRTH_TOOLS = new Set(["bazi", "ziwei", "astrology"]);
+const LOCAL_RUNNABLE = new Set(["almanac", "tarot", ...LOCAL_BIRTH_TOOLS]);
+
+function localToolArgs(toolName, text, profile) {
+  const birth = profile ? profileToRequest(profile) : {};
+  if (toolName === "almanac") return { ...birth, date: todayString() };
+  if (toolName === "tarot") return { question: text };
+  if (toolName === "astrology") {
+    return {
+      birthYear: birth.birthYear,
+      birthMonth: birth.birthMonth,
+      birthDay: birth.birthDay,
+      birthHour: birth.birthHour,
+      birthMinute: birth.birthMinute,
+    };
+  }
+  return { ...birth };
+}
+
+function localReadingFor(toolName, args, result) {
+  if (toolName === "almanac") {
+    return buildLocalDailyReading({
+      date: todayString(),
+      almanac: { text: result.text, structured: result.structured || null, raw: result.raw || null },
+    });
+  }
+  return buildLocalToolReading(toolName, {
+    request: args,
+    response: result,
+    time: new Date().toISOString(),
+  });
+}
+
+async function localChatReply(text, notice = "") {
+  const stream = app.querySelector("[data-chat-stream]");
+  if (!stream) return;
+
+  chatBusy = true;
+  setChatComposerBusy(true);
+
+  const row = document.createElement("div");
+  row.className = "chat-row assistant";
+  row.innerHTML = `
+    <span class="chat-avatar" aria-hidden="true">卜</span>
+    <div class="chat-bubble assistant">
+      <div class="chat-tools" data-live-tools>${notice ? `<div class="chat-notice">${escapeHtml(notice)}</div>` : ""}</div>
+      <div class="chat-bubble-body markdown-render" data-live-body></div>
+    </div>
+  `;
+  stream.appendChild(row);
+  const liveTools = row.querySelector("[data-live-tools]");
+  const liveBody = row.querySelector("[data-live-body]");
+  scrollChatToEnd();
+
+  const profile = getActiveProfile();
+  const intent = LOCAL_INTENTS.find((rule) => rule.pattern.test(text));
+  let content = "";
+  let trace = [];
+
+  try {
+    if (!intent) {
+      content = [
+        "本地模式下我只认得几类明确的问题：今日运势、八字、紫微、星盘、塔罗。",
+        "",
+        "你可以直接说「看看我今天的运势」，或点左下角「术」打开工具列表自己排盘。",
+        "",
+        `想在对话里问任意问题（例如「今年适合换工作吗」），${LOCAL_UPGRADE_HINT}`,
+      ].join("\n");
+    } else if (!LOCAL_RUNNABLE.has(intent.tool)) {
+      content = [
+        `「${toolLabel(intent.tool)}」需要的参数比较多，本地模式无法替你决定。`,
+        "",
+        `请点左下角「术」→「${toolLabel(intent.tool)}」自己填参数排盘，排完同样能看到本地解读。`,
+        "",
+        LOCAL_UPGRADE_HINT,
+      ].join("\n");
+    } else if (LOCAL_BIRTH_TOOLS.has(intent.tool) && !profile) {
+      content = [
+        `「${toolLabel(intent.tool)}」需要出生信息。`,
+        "",
+        "请先到「我的 → 命主档案」建一个档案，再回来问。",
+      ].join("\n");
+    } else {
+      const args = localToolArgs(intent.tool, text, profile);
+      const meta = getToolMeta(intent.tool);
+      const card = document.createElement("div");
+      card.className = "chat-tool-card is-running";
+      card.innerHTML = `
+        <span class="chat-tool-icon" style="--card-tint:${meta.tint};--card-ink:${meta.ink}">${escapeHtml(meta.icon)}</span>
+        <span class="chat-tool-name">${escapeHtml(toolLabel(intent.tool))}</span>
+        <span class="chat-tool-state">排盘中…</span>
+      `;
+      liveTools.appendChild(card);
+      scrollChatToEnd();
+
+      const result = await callToolApi(intent.tool, args);
+      card.classList.remove("is-running");
+      const stateEl = card.querySelector(".chat-tool-state");
+      if (stateEl) stateEl.textContent = "已排盘";
+
+      content = `${localReadingFor(intent.tool, args, result)}\n\n本地模式说明：以上内容由本地规则依据计算结果生成，未调用模型。${LOCAL_UPGRADE_HINT}`;
+      trace = [{ name: intent.tool, ok: true, text: result.text }];
+    }
+  } catch (error) {
+    content = `本地排盘没能完成：${error.message}`;
+  } finally {
+    liveBody.innerHTML = renderMarkdown(content);
     const log = getChatLog();
     log.push({
       role: "assistant",
-      content: `抱歉，这次没能完成：${error.message}`,
-      error: true,
+      content,
+      raw: trace.length
+        ? `【排盘结果 · ${toolLabel(trace[0].name)}】\n${trace[0].text}\n\n【解读】\n${content}`
+        : content,
+      tools: trace,
+      local: true,
       time: new Date().toISOString(),
     });
     saveChatLog(log);
-  } finally {
     chatBusy = false;
     render();
     scrollChatToEnd();
@@ -2059,8 +2924,7 @@ function renderDailyReport() {
 }
 
 function renderDailyAiSection(report) {
-  const settings = getAiSettings();
-  const hasKey = Boolean(settings.apiKey);
+  const hasKey = aiEnabled();
   const ai = report.ai;
   const aiLoading = report.aiLoading;
   const aiError = report.aiError || "";
@@ -2068,10 +2932,8 @@ function renderDailyAiSection(report) {
   let body;
   if (!hasKey) {
     body = `
-      <div class="ai-setup-hint">
-        <p>配置模型后，可自动生成通俗易懂的今日解读（严格基于计算结果）。</p>
-        <button class="primary-button" data-action="ai-settings">前往模型设置</button>
-      </div>
+      <div class="result-text markdown-render">${renderMarkdown(buildLocalDailyReading(report))}</div>
+      ${localReadingHintBlock()}
     `;
   } else if (aiLoading) {
     body = `
@@ -2107,7 +2969,7 @@ function renderDailyAiSection(report) {
       <div class="section-heading">
         <div>
           <h2>今日解读</h2>
-          <p class="page-subtitle">AI 严格依据上方计算结果生成，不编造未计算的内容。</p>
+          <p class="page-subtitle">${escapeHtml(aiModeSubtitle())}</p>
         </div>
       </div>
       ${body}
@@ -2187,7 +3049,7 @@ async function beginStreamingReport(profile, force = false) {
   const cache = getDailyReportCache(profile);
   if (!cache) return;
   const settings = getAiSettings();
-  if (!settings.apiKey.trim()) return;
+  if (!aiEnabled()) return;
 
   const partial = force ? "" : cache.report.aiStreamPartial || "";
   cache.report.aiLoading = true;
@@ -2196,6 +3058,7 @@ async function beginStreamingReport(profile, force = false) {
   saveDailyReportCache(profile, cache.report);
   setGenState(profile, "generating");
   streamActive = true;
+  setNativeGenerating(true);
   render();
 
   const box = document.querySelector("[data-ai-stream-box]");
@@ -2231,6 +3094,18 @@ async function beginStreamingReport(profile, force = false) {
     setGenState(profile, "done");
   } catch (error) {
     const updated = getDailyReportCache(profile);
+    // 免费体验用完：不留报错，界面自动落回本地解读
+    if (isRelayProvider(settings) && isRelayBlockError(error)) {
+      markRelayExhausted();
+      if (updated) {
+        updated.report.aiLoading = false;
+        updated.report.aiError = "";
+        delete updated.report.aiStreamPartial;
+        saveDailyReportCache(profile, updated.report);
+      }
+      setGenState(profile, "done");
+      return;
+    }
     if (updated) {
       updated.report.aiLoading = false;
       updated.report.aiError = error.message;
@@ -2239,6 +3114,7 @@ async function beginStreamingReport(profile, force = false) {
     setGenState(profile, "error");
   } finally {
     streamActive = false;
+    setNativeGenerating(false);
     render();
   }
 }
@@ -2316,6 +3192,8 @@ function fieldPlaceholder(fieldKey, schema) {
 }
 
 function renderField(fieldKey, schema, toolName) {
+  // 出生时辰用十二时辰下拉，比填 0-23 的数字更省事
+  if (fieldKey === "birthHour") return renderShichenField(fieldKey, defaultValueFor(fieldKey, schema));
   const type = inputTypeFor(fieldKey, schema, toolName);
   const value = defaultValueFor(fieldKey, schema);
   const label = LABELS[fieldKey] || fieldKey;
@@ -2323,7 +3201,7 @@ function renderField(fieldKey, schema, toolName) {
   const hint = schema.description
     ? `<p class="field-hint">${escapeHtml(translateHint(schema.description))}</p>`
     : "";
-  const wide = fieldKey === "question" || fieldKey === "numbers" || fieldKey === "queries" || schema.type === "object";
+  const wide = fieldKey === "question" || fieldKey === "numbers" || fieldKey === "queries" || fieldKey === "birthPlace" || schema.type === "object";
   const className = `field ${wide ? "field-wide" : ""}`;
 
   let control = "";
@@ -2392,15 +3270,20 @@ function renderToolForm(toolName) {
   const required = tool.inputSchema?.required || [];
   const groupedFields = {};
   const ungroupedFields = [];
+  const advancedFields = [];
   for (const [key, schema] of Object.entries(properties)) {
-    if (key === "detailLevel") continue;
     const normalizedSchema = { ...schema, required: required.includes(key) };
+    if (ADVANCED_FIELDS.includes(key)) {
+      advancedFields.push(renderField(key, normalizedSchema, toolName));
+      continue;
+    }
     const group = FIELD_GROUPS.find((g) => g.fields.includes(key));
+    const html = renderField(key, normalizedSchema, toolName);
     if (group) {
       if (!groupedFields[group.key]) groupedFields[group.key] = [];
-      groupedFields[group.key].push(renderField(key, normalizedSchema, toolName));
+      groupedFields[group.key].push({ key, html });
     } else {
-      ungroupedFields.push(renderField(key, normalizedSchema, toolName));
+      ungroupedFields.push(html);
     }
   }
 
@@ -2413,12 +3296,24 @@ function renderToolForm(toolName) {
   const visibleGroups = FIELD_GROUPS.filter((g) => groupedFields[g.key] && groupedFields[g.key].length);
   const numeralFor = (key) => GROUP_NUMERALS[visibleGroups.filter((g) => !hiddenGroups.includes(g.key)).findIndex((g) => g.key === key)] || "";
 
+  // 出生年月日挤在一行，其余字段走两列栅格
+  const DATE_ROW_KEYS = ["birthYear", "birthMonth", "birthDay"];
+  const renderGroupGrid = (groupKey, items) => {
+    if (groupKey !== "birth") return `<div class="form-grid">${items.map((item) => item.html).join("")}</div>`;
+    const dateItems = DATE_ROW_KEYS.map((k) => items.find((item) => item.key === k)).filter(Boolean);
+    const rest = items.filter((item) => !DATE_ROW_KEYS.includes(item.key));
+    const dateRow = dateItems.length
+      ? `<div class="field-row field-row-3">${dateItems.map((item) => item.html).join("")}</div>`
+      : "";
+    return `<div class="form-grid">${dateRow}${rest.map((item) => item.html).join("")}</div>`;
+  };
+
   const groupHtml = FIELD_GROUPS.filter((g) => groupedFields[g.key] && groupedFields[g.key].length)
     .map(
       (g) => `
         <div class="form-group${hiddenGroups.includes(g.key) ? " is-hidden" : ""}" data-group="${g.key}">
           <div class="form-group-title"><span class="form-group-index" aria-hidden="true">${numeralFor(g.key)}</span>${escapeHtml(g.label)}</div>
-          <div class="form-grid">${groupedFields[g.key].join("")}</div>
+          ${renderGroupGrid(g.key, groupedFields[g.key])}
         </div>
       `
     )
@@ -2430,7 +3325,7 @@ function renderToolForm(toolName) {
         <div class="profile-prefill-info">
           <span class="profile-prefill-label">已带入</span>
           <strong>${escapeHtml(active.name)}</strong>
-          <span>${active.gender === "female" ? "女" : "男"} · ${active.calendarType === "lunar" ? "农历" : "公历"}${active.birthYear}年${active.birthMonth}月${active.birthDay}日 ${active.birthHour}时${active.birthPlace ? ` · ${escapeHtml(active.birthPlace)}` : ""}</span>
+          <span>${escapeHtml(profileDetail(active))}</span>
         </div>
         <div class="profile-prefill-actions">
           <button type="button" class="secondary-button" data-action="edit-birth">修改资料</button>
@@ -2441,8 +3336,13 @@ function renderToolForm(toolName) {
     : "";
   const ungroupedHtml = ungroupedFields.length ? `<div class="form-grid">${ungroupedFields.join("")}</div>` : "";
 
-  const advancedFields = properties.detailLevel
-    ? renderField("detailLevel", { ...properties.detailLevel, required: false }, toolName)
+  const advancedHtml = advancedFields.length
+    ? `
+        <details class="details-box">
+          <summary>高级设置（可选）</summary>
+          <div class="form-grid" style="margin-top:10px">${advancedFields.join("")}</div>
+        </details>
+      `
     : "";
 
   const saveRow = usesBirth
@@ -2467,10 +3367,7 @@ function renderToolForm(toolName) {
       ${prefillBar}
       <form class="form-panel panel" data-tool-form="${escapeHtml(toolName)}">
         ${groupHtml}${ungroupedHtml}
-        <details class="details-box">
-          <summary>高级设置</summary>
-          <div class="form-grid" style="margin-top:10px">${advancedFields}</div>
-        </details>
+        ${advancedHtml}
         ${saveRow}
         <div class="form-actions">
           <button type="button" class="secondary-button" data-action="tools">取消</button>
@@ -2496,8 +3393,14 @@ function revealBirthGroups(clearValues) {
     const birthFields = ["gender", "birthYear", "birthMonth", "birthDay", "birthHour", "birthMinute", "calendarType", "isLeapMonth", "birthPlace", "longitude", "latitude"];
     form.querySelectorAll("[data-field]").forEach((field) => {
       if (!birthFields.includes(field.dataset.field)) return;
-      if (field.type === "checkbox") field.checked = false;
-      else field.value = "";
+      if (field.type === "checkbox") {
+        field.checked = false;
+      } else if (field.tagName === "SELECT") {
+        // 下拉不能清成空值，回到第一项（公历 / 子时 等）
+        field.selectedIndex = 0;
+      } else {
+        field.value = "";
+      }
     });
   }
   form.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -2512,6 +3415,12 @@ function collectFormValues(form) {
       continue;
     }
     if (element.type === "number") {
+      const raw = element.value.trim();
+      if (raw !== "") values[key] = Number(raw);
+      continue;
+    }
+    if (key === "birthHour" || key === "birthMinute") {
+      // 时辰/分钟可能是下拉或数字框，统一转成数字
       const raw = element.value.trim();
       if (raw !== "") values[key] = Number(raw);
       continue;
@@ -2632,8 +3541,7 @@ function renderResult(toolName) {
 }
 
 function renderAiSection(toolName, item) {
-  const settings = getAiSettings();
-  const hasKey = Boolean(settings.apiKey);
+  const hasKey = aiEnabled();
   const chat = getChatMessages(item);
   const chatHtml = chat
     .map(
@@ -2669,18 +3577,20 @@ function renderAiSection(toolName, item) {
       </div>
     `
     : `
-      <div class="ai-setup-hint">
-        <p>尚未配置模型，配置后可用 AI 辅助理解排盘结果。</p>
-        <button class="primary-button" data-action="ai-settings">前往模型设置</button>
-      </div>
+      <div class="result-text markdown-render">${renderMarkdown(buildLocalToolReading(toolName, item))}</div>
+      ${localReadingHintBlock()}
     `;
 
   return `
     <section class="panel result-panel ai-panel">
       <div class="section-heading">
         <div>
-          <h2>智能对话</h2>
-          <p class="page-subtitle">密钥只保存在本机，不会写入 APK 文件或发送到服务器。</p>
+          <h2>${hasKey ? "智能对话" : "本地解读"}</h2>
+          <p class="page-subtitle">${
+            hasKey
+              ? "密钥只保存在本机，不会写入 APK 文件或发送到服务器。"
+              : "不调用模型，全部内容由本地规则依据排盘结果生成。"
+          }</p>
         </div>
       </div>
       ${body}
@@ -2770,20 +3680,40 @@ function showBackupStatus(message, ok = true) {
   el.classList.toggle("backup-status-error", !ok);
 }
 
+// 「我的」页档案编辑器的展开状态：null=收起，"edit"=编辑当前，"new"=新建
+let mineFormMode = null;
+
 function renderMinePage() {
   const profiles = getProfiles();
   const active = getActiveProfile();
   const settings = getAiSettings();
-  const p = active || {};
+  const hasProfile = Boolean(active);
+  const creating = mineFormMode === "new";
+  const formOpen = mineFormMode !== null || !hasProfile;
+  const p = creating ? {} : active || {};
   const val = (key) => escapeHtml(p[key] !== undefined && p[key] !== null ? String(p[key]) : "");
 
   const profileForm = `
     <form class="form-panel panel" data-mine-profile-form>
-      <input type="hidden" data-mine-edit-id value="${val("id")}" />
+      <input type="hidden" data-mine-edit-id value="${creating ? "" : val("id")}" />
       <div class="form-grid">
-        <div class="field">
+        <div class="field field-wide">
           <label for="mine-name">姓名 / 称呼</label>
           <input id="mine-name" data-mine-name value="${val("name")}" placeholder="如：张三" />
+        </div>
+        <div class="field-row field-row-3">
+          <div class="field">
+            <label for="mine-birth-year">出生年</label>
+            <input id="mine-birth-year" type="number" inputmode="numeric" data-field="birthYear" value="${val("birthYear")}" min="1900" max="2100" />
+          </div>
+          <div class="field">
+            <label for="mine-birth-month">出生月</label>
+            <input id="mine-birth-month" type="number" inputmode="numeric" data-field="birthMonth" value="${val("birthMonth")}" min="1" max="12" />
+          </div>
+          <div class="field">
+            <label for="mine-birth-day">出生日</label>
+            <input id="mine-birth-day" type="number" inputmode="numeric" data-field="birthDay" value="${val("birthDay")}" min="1" max="31" />
+          </div>
         </div>
         <div class="field">
           <label for="mine-gender">性别</label>
@@ -2793,78 +3723,88 @@ function renderMinePage() {
           </select>
         </div>
         <div class="field">
-          <label for="mine-birth-year">出生年</label>
-          <input id="mine-birth-year" type="number" inputmode="numeric" data-field="birthYear" value="${val("birthYear")}" min="1900" max="2100" />
-        </div>
-        <div class="field">
-          <label for="mine-birth-month">出生月</label>
-          <input id="mine-birth-month" type="number" inputmode="numeric" data-field="birthMonth" value="${val("birthMonth")}" min="1" max="12" />
-        </div>
-        <div class="field">
-          <label for="mine-birth-day">出生日</label>
-          <input id="mine-birth-day" type="number" inputmode="numeric" data-field="birthDay" value="${val("birthDay")}" min="1" max="31" />
-        </div>
-        <div class="field">
-          <label for="mine-birth-hour">出生时</label>
-          <input id="mine-birth-hour" type="number" inputmode="numeric" data-field="birthHour" value="${val("birthHour")}" min="0" max="23" />
-        </div>
-        <div class="field">
-          <label for="mine-birth-minute">出生分</label>
-          <input id="mine-birth-minute" type="number" inputmode="numeric" data-field="birthMinute" value="${val("birthMinute")}" min="0" max="59" />
-        </div>
-        <div class="field">
           <label for="mine-calendar">历法</label>
           <select id="mine-calendar" data-field="calendarType">
             <option value="solar" ${p.calendarType !== "lunar" ? "selected" : ""}>公历</option>
             <option value="lunar" ${p.calendarType === "lunar" ? "selected" : ""}>农历</option>
           </select>
         </div>
-        <div class="field">
-          <div class="toggle-field">
-            <label for="mine-leap">闰月</label>
-            <input id="mine-leap" data-field="isLeapMonth" type="checkbox" ${p.isLeapMonth ? "checked" : ""} />
-          </div>
-        </div>
+        ${renderShichenField("birthHour", p.birthHour ?? 12)}
         <div class="field">
           <label for="mine-place">出生地点</label>
-          <input id="mine-place" data-field="birthPlace" value="${val("birthPlace")}" placeholder="如：北京市" />
-        </div>
-        <div class="field">
-          <label for="mine-lng">经度（可选）</label>
-          <input id="mine-lng" type="number" step="0.0001" data-field="longitude" value="${val("longitude")}" />
-        </div>
-        <div class="field">
-          <label for="mine-lat">纬度（可选）</label>
-          <input id="mine-lat" type="number" step="0.0001" data-field="latitude" value="${val("latitude")}" />
+          <input id="mine-place" data-field="birthPlace" value="${val("birthPlace")}" placeholder="如：北京市（可选）" />
         </div>
       </div>
+      <details class="details-box">
+        <summary>高级设置（可选）</summary>
+        <div class="form-grid" style="margin-top:10px">
+          <div class="field">
+            <label for="mine-birth-minute">出生分（精确到分）</label>
+            <input id="mine-birth-minute" type="number" inputmode="numeric" data-field="birthMinute" value="${val("birthMinute")}" min="0" max="59" />
+          </div>
+          <div class="field">
+            <div class="toggle-field">
+              <label for="mine-leap">农历闰月</label>
+              <input id="mine-leap" data-field="isLeapMonth" type="checkbox" ${p.isLeapMonth ? "checked" : ""} />
+            </div>
+          </div>
+          <div class="field">
+            <label for="mine-lng">经度（可选）</label>
+            <input id="mine-lng" type="number" step="0.0001" data-field="longitude" value="${val("longitude")}" />
+          </div>
+          <div class="field">
+            <label for="mine-lat">纬度（可选）</label>
+            <input id="mine-lat" type="number" step="0.0001" data-field="latitude" value="${val("latitude")}" />
+          </div>
+        </div>
+      </details>
       <div class="form-actions">
-        <button class="secondary-button" type="button" data-action="new-profile">新建档案</button>
-        <button class="primary-button" type="submit">${active ? "保存修改" : "保存档案"}</button>
+        <button class="secondary-button" type="button" data-action="mine-cancel-profile">取消</button>
+        <button class="primary-button" type="submit">${hasProfile && !creating ? "保存修改" : "保存档案"}</button>
       </div>
       <div class="error-box is-hidden" data-mine-error></div>
     </form>
   `;
 
-  const profileList = profiles.length
-    ? profiles
-        .map((profile) => {
-          const isActive = active?.id === profile.id;
-          return `
+  const profileCard = `
+    <div class="profile-card${formOpen ? " is-open" : ""}">
+      <span class="profile-card-avatar" aria-hidden="true">${hasProfile ? escapeHtml((active.name || "档").trim().slice(0, 1)) : "＋"}</span>
+      <div class="profile-card-body">
+        <div class="profile-card-name">${hasProfile ? escapeHtml(active.name) : "还没有个人档案"}</div>
+        <div class="profile-card-meta">${hasProfile ? escapeHtml(profileDetail(active)) : "填一次出生信息，之后排盘自动带入。"}</div>
+      </div>
+      <div class="profile-card-actions">
+        ${hasProfile ? `<button class="secondary-button" type="button" data-action="mine-toggle-profile">${formOpen ? "收起" : "编辑"}</button>` : ""}
+        ${hasProfile && !creating ? `<button class="secondary-button" type="button" data-action="mine-new-profile">新建</button>` : ""}
+      </div>
+    </div>
+  `;
+
+  const profileEditor = `<div class="profile-editor${formOpen ? " is-open" : ""}">${profileForm}</div>`;
+
+  const others = profiles.filter((profile) => !active || profile.id !== active.id);
+  const profileList = others.length
+    ? `
+      <div class="profile-others">
+        <p class="profile-others-title">其他档案</p>
+        ${others
+          .map(
+            (profile) => `
             <div class="panel profile-list-item">
               <div>
                 <strong>${escapeHtml(profile.name)}</strong>
                 <p>${escapeHtml(profileSummary(profile))}</p>
-                <span>${isActive ? "当前测算对象" : "未启用"}</span>
               </div>
               <div class="profile-list-actions">
-                <button class="secondary-button" data-action="set-profile" data-profile-id="${escapeHtml(profile.id)}">${isActive ? "编辑此档案" : "设为当前"}</button>
+                <button class="secondary-button" data-action="set-profile" data-profile-id="${escapeHtml(profile.id)}">设为当前</button>
                 <button class="secondary-button" data-action="delete-profile" data-profile-id="${escapeHtml(profile.id)}">删除</button>
               </div>
             </div>
-          `;
-        })
-        .join("")
+          `
+          )
+          .join("")}
+      </div>
+    `
     : "";
 
   const history = getHistory();
@@ -2885,13 +3825,14 @@ function renderMinePage() {
         .join("")
     : `<p class="mine-empty">暂无历史记录。</p>`;
 
-  const providerOptions = Object.entries(AI_PROVIDERS)
+  const providerOptions = AI_PROVIDER_ORDER.filter((key) => AI_PROVIDERS[key])
     .map(
-      ([key, config]) =>
-        `<option value="${escapeHtml(key)}" ${settings.provider === key ? "selected" : ""}>${escapeHtml(config.label)}</option>`
+      (key) =>
+        `<option value="${escapeHtml(key)}" ${settings.provider === key ? "selected" : ""}>${escapeHtml(AI_PROVIDERS[key].label)}</option>`
     )
     .join("");
   const current = AI_PROVIDERS[settings.provider] || AI_PROVIDERS.deepseek;
+  const relayActive = isRelayProvider(settings);
   const modelList = current.models && current.models.length ? current.models : [{ model: current.model, label: current.model }];
   const activeModel = current.models && current.models.some((m) => m.model === settings.model)
     ? settings.model
@@ -2909,8 +3850,9 @@ function renderMinePage() {
       <p class="page-subtitle">个人档案、历史记录、模型设置与数据备份。档案只保存在本机。</p>
 
       <div class="section-heading"><h2>个人档案</h2></div>
-      ${profileForm}
-      ${profileList ? `<div class="history-list mine-profile-list">${profileList}</div>` : ""}
+      ${profileCard}
+      ${profileEditor}
+      ${profileList}
 
       <div class="section-heading"><h2>历史记录</h2>${history.length ? `<button class="secondary-button mine-more" data-action="history">查看全部</button>` : ""}</div>
       <div class="history-list">${historyPreview}</div>
@@ -2925,12 +3867,25 @@ function renderMinePage() {
             <select id="ai-model" data-ai-model>${modelOptions}</select>
             <p class="field-hint" data-ai-base-hint>接口：${escapeHtml(current.baseUrl)}</p>
           </div>
-          <div class="field">
+          <div class="field ${relayActive ? "is-hidden" : ""}" data-ai-key-field>
             <label for="ai-key">接口密钥</label>
             <input id="ai-key" data-ai-key type="password" value="${escapeHtml(settings.apiKey)}" placeholder="sk-..." />
             <p class="field-hint">密钥只保存在本机，不会随 APK 传播。</p>
           </div>
         </div>
+        ${
+          relayActive
+            ? `
+        <div class="relay-quota-box" data-relay-box>
+          <p><strong>免费体验</strong> · ${escapeHtml(relayQuotaText())}</p>
+          <p class="field-hint">无需填写密钥，装好就能用。次数用完后，在这里换成自己的 DeepSeek / 小米 MiMo 密钥即可继续。</p>
+          <button class="secondary-button" type="button" data-action="relay-refresh">刷新剩余次数</button>
+        </div>
+        `
+            : AI_PROVIDERS.relay
+              ? `<p class="field-hint">还没有密钥？把上面的「提供商」改成「免费体验」，不填密钥也能直接用。</p>`
+              : ""
+        }
         <div class="form-actions">
           <button class="primary-button" type="submit">保存设置</button>
         </div>
@@ -2995,21 +3950,8 @@ function saveMineProfile(form) {
   profiles.push(profile);
   saveProfiles(profiles);
   setActiveProfile(profile.id);
+  mineFormMode = null;
   render();
-}
-
-function clearMineProfileForm() {
-  const form = document.querySelector("[data-mine-profile-form]");
-  if (!form) return;
-  form.querySelector("[data-mine-edit-id]").value = "";
-  form.querySelector("[data-mine-name]").value = "";
-  form.querySelectorAll("[data-field]").forEach((field) => {
-    if (field.type === "checkbox") field.checked = false;
-    else field.value = "";
-  });
-  const errorBox = form.querySelector("[data-mine-error]");
-  if (errorBox) errorBox.classList.add("is-hidden");
-  form.querySelector("[data-mine-name]")?.focus();
 }
 
 function saveAiSettingsPageFromPage(form) {
@@ -3018,6 +3960,11 @@ function saveAiSettingsPageFromPage(form) {
   const apiKey = form.querySelector("[data-ai-key]")?.value || "";
   const config = AI_PROVIDERS[provider] || AI_PROVIDERS.deepseek;
   saveAiSettings({ provider, apiKey, model: model || config.model, baseUrl: config.baseUrl });
+  if (config.relay) {
+    // 切到免费体验时顺手校准一次剩余次数
+    refreshRelayQuota().then(() => render());
+    return;
+  }
   render();
 }
 
@@ -3052,6 +3999,12 @@ async function runAiChat(userText) {
     saveChat(toolName, chat);
     render();
   } catch (error) {
+    // 免费体验用完：整页重绘后会自动变成本地解读
+    if (isRelayProvider(getAiSettings()) && isRelayBlockError(error)) {
+      markRelayExhausted();
+      render();
+      return;
+    }
     if (errorBox) {
       errorBox.textContent = error.message;
       errorBox.classList.remove("is-hidden");
@@ -3165,6 +4118,8 @@ function render() {
   app.innerHTML = content;
   syncTopbarHeight();
   bindEvents();
+  // 生成中重绘（如免费额度刷新）会把输入区恢复成可点状态，这里补回来
+  if (chatBusy) setChatComposerBusy(true);
   if (first === "tool" && toolName) {
     // 直接展示的表单（非一键排盘）自动带入当前档案资料
     const form = app.querySelector("[data-tool-form]");
@@ -3205,6 +4160,8 @@ function bindEvents() {
         if (sheet) sheet.hidden = false;
       } else if (action === "chat-sheet-close") {
         closeChatSheet();
+      } else if (action === "chat-retry") {
+        retryChatTurn(element.dataset.id || "");
       } else if (action === "chat-history") {
         window.location.hash = "#/chats";
       } else if (action === "chat-new") {
@@ -3236,6 +4193,8 @@ function bindEvents() {
         retryDailyReport();
       } else if (action === "ai-report-regenerate") {
         regenerateDailyAi();
+      } else if (action === "relay-refresh") {
+        refreshRelayQuota().then(() => render());
       } else if (action === "tool") {
         window.location.hash = `#/tool/${encodeURIComponent(tool)}`;
       } else if (action === "edit-birth") {
@@ -3256,10 +4215,18 @@ function bindEvents() {
         clearAiChat();
       } else if (action === "save-profile") {
         saveProfileFromPage();
-      } else if (action === "new-profile") {
-        clearMineProfileForm();
+      } else if (action === "mine-toggle-profile") {
+        mineFormMode = mineFormMode === null ? "edit" : null;
+        render();
+      } else if (action === "mine-new-profile") {
+        mineFormMode = "new";
+        render();
+      } else if (action === "mine-cancel-profile") {
+        mineFormMode = null;
+        render();
       } else if (action === "set-profile") {
         setActiveProfile(element.dataset.profileId);
+        mineFormMode = null;
         render();
       } else if (action === "delete-profile") {
         const profileIdToDelete = element.dataset.profileId;
@@ -3270,6 +4237,7 @@ function bindEvents() {
           if (getActiveProfile()?.id === profileIdToDelete) {
             localStorage.removeItem(ACTIVE_PROFILE_KEY);
           }
+          mineFormMode = null;
           render();
         }
       } else if (action === "open-history") {
@@ -3354,6 +4322,7 @@ function bindEvents() {
       const config = AI_PROVIDERS[select.value];
       const hint = select.parentElement?.querySelector("[data-ai-base-hint]");
       const modelSelect = select.parentElement?.querySelector("[data-ai-model]");
+      const keyField = select.closest("form")?.querySelector("[data-ai-key-field]");
       if (config) {
         if (modelSelect) {
           const models = config.models && config.models.length ? config.models : [{ model: config.model, label: config.model }];
@@ -3362,8 +4331,9 @@ function bindEvents() {
             .join("");
         }
         if (hint) {
-          hint.textContent = `接口：${config.baseUrl}`;
+          hint.textContent = config.relay ? "接口：由太卜中转服务提供，无需密钥" : `接口：${config.baseUrl}`;
         }
+        if (keyField) keyField.classList.toggle("is-hidden", Boolean(config.relay));
       }
     });
   });
@@ -3418,9 +4388,19 @@ async function init() {
   }
   initUpdateCheck();
   initVoiceBridge();
-  // 启动即开一段新对话：旧对话留在「历史」里，不会被一次性铺满整屏
+  // 启动即开一段新对话：旧对话留在「历史」里，不会被一次性铺满整屏。
+  // 但上次生成被中断（切后台/熄屏/WebView 被回收）时留在原会话，
+  // 让用户看到已生成的部分并点「重新生成」，而不是直接换到空白新会话。
   migrateLegacyChat();
-  startNewChat();
+  // 上一轮被中断时留在原会话（不换新会话），并重绘一次让「重新生成」按钮出现
+  if (finalizeStaleTurns()) render();
+  else startNewChat();
+  // 后台校准免费体验剩余次数：额度跨月恢复或换设备后，本地状态要跟着更新
+  if (AI_PROVIDERS.relay) {
+    refreshRelayQuota().then((quota) => {
+      if (quota) render();
+    });
+  }
   // 启动即应用已保存的字号偏好，避免首屏闪动
   document.documentElement.dataset.font = getFontScaleId();
   // 同步已保存主题（含 theme-color），首屏底色由 index.html 内联脚本先行落地
@@ -3439,6 +4419,7 @@ async function init() {
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) {
       // 熄屏/切后台前把已生成部分落地，避免中断丢数据
+      persistChatTurnPartial();
       const active = getActiveProfile();
       if (active) {
         const cache = getDailyReportCache(active);

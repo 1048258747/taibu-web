@@ -1894,6 +1894,54 @@ body::before {
   justify-self: center;
 }
 
+/* 本地解读：未配置模型时，解读内容下方接一条升级引导 */
+.local-reading-hint {
+  display: grid;
+  gap: 12px;
+  margin-top: 16px;
+  padding: 14px 16px;
+  text-align: center;
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius);
+  background: rgba(var(--bg-rgb), 0.6);
+}
+
+.local-reading-hint p {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.local-reading-hint .primary-button {
+  justify-self: center;
+}
+
+/* 免费体验：设置页里的剩余次数卡片 */
+.relay-quota-box {
+  display: grid;
+  gap: 8px;
+  margin-top: 14px;
+  padding: 14px 16px;
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius);
+  background: rgba(var(--bg-rgb), 0.6);
+}
+
+.relay-quota-box p {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.relay-quota-box .field-hint {
+  margin: 0;
+}
+
+.relay-quota-box .secondary-button {
+  justify-self: start;
+}
+
 /* 空状态：更精致的印章引导 */
 .empty-box {
   min-height: 190px;
@@ -2458,13 +2506,120 @@ html[data-font="xlarge"] .topbar-nav button {
   font-size: 13px;
 }
 
-.mine-profile-list {
-  margin-top: 12px;
+/* 「我的」页档案摘要卡：默认只占一行，细节收进可折叠编辑器 */
+.profile-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 13px 16px;
+  margin-bottom: 12px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--accent-2);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-soft);
+}
+
+.profile-card-avatar {
+  flex: 0 0 auto;
+  width: 40px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--accent-2-soft);
+  color: var(--accent-2);
+  font-family: var(--font-serif);
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.profile-card-body {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.profile-card-name {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.profile-card-meta {
+  margin-top: 3px;
+  color: var(--ink-soft);
+  font-size: 12.5px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.profile-card-actions {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 8px;
+}
+
+.profile-card-actions .secondary-button {
+  min-height: 34px;
+  padding: 0 12px;
+  font-size: 13px;
+}
+
+/* 可折叠的档案编辑器：默认收起，点「编辑 / 新建」才展开 */
+.profile-editor {
+  display: none;
+}
+
+.profile-editor.is-open {
+  display: block;
+  margin-bottom: 12px;
+  animation: profile-editor-in 0.22s ease both;
+}
+
+@keyframes profile-editor-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* 其他档案：当前档案已在卡片里，这里只列其余档案 */
+.profile-others {
+  margin-top: 4px;
+}
+
+.profile-others-title {
+  margin: 0 0 8px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+}
+
+/* 表单里的三列紧凑行：出生年月日一行填完 */
+.field-row-3 {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
 }
 
 @media (max-width: 380px) {
   .home-onboard {
     grid-template-columns: 1fr;
+  }
+
+  .profile-card {
+    flex-wrap: wrap;
+  }
+
+  .profile-card-actions {
+    width: 100%;
+    justify-content: flex-end;
   }
 }
 
@@ -2834,6 +2989,12 @@ details.chat-tool-card summary::-webkit-details-marker {
   border-color: rgba(var(--accent-rgb), 0.35);
   background: var(--accent-soft);
   color: var(--accent-dark);
+}
+
+/* 生成中断后的「重新生成」按钮：跟在半截内容后面，给个上边距 */
+.chat-retry-button {
+  margin-top: 10px;
+  align-self: flex-start;
 }
 
 .link-button {
