@@ -284,6 +284,12 @@ const CHAT_SESSION_PREFIX = "taibu:chatlog:";
 const CHAT_LOG_LIMIT = 80;
 const CHAT_TITLE_LIMIT = 18;
 const CHAT_HISTORY_LIMIT = 12;
+// 一次渲染最多画多少条消息：长会话全量重跑 markdown 会让整页越来越卡，更早的折叠掉
+const CHAT_RENDER_LIMIT = 30;
+// 流式期间落库的间隔：每次落库都要把整段会话序列化一遍，太频繁会拖慢字流
+const CHAT_PERSIST_INTERVAL_MS = 1500;
+// 息屏/切后台把生成掐断的，回到前台自动重试；超过这个时长就不再自动重试，避免久置后突然自己跑起来
+const AUTO_RETRY_WINDOW_MS = 10 * 60 * 1000;
 let chatBusy = false;
 
 // 底部 / 顶部导航（对话为主入口，工具降为次级入口列表）
@@ -1580,12 +1586,20 @@ function migrateLegacyChat() {
 
 function getChatIndex() {
   migrateLegacyChat();
+  if (chatIndexCache) return chatIndexCache;
   const index = readJson(CHAT_INDEX_KEY, []);
-  return Array.isArray(index) ? index.filter((item) => item && item.id) : [];
+  const list = Array.isArray(index) ? index.filter((item) => item && item.id) : [];
+  chatIndexCache = list;
+  return list;
 }
 
 function saveChatIndex(index) {
-  localStorage.setItem(CHAT_INDEX_KEY, JSON.stringify(index));
+  chatIndexCache = index;
+  try {
+    localStorage.setItem(CHAT_INDEX_KEY, JSON.stringify(index));
+  } catch (error) {
+    // 索引写不进去也不该让调用方崩掉，下次读取回落到已存内容
+  }
 }
 
 function getActiveChatId() {
@@ -1604,29 +1618,64 @@ function getChatLog() {
   return getChatLogFor(getActiveChatId());
 }
 
+// 会话日志/索引的内存缓存：localStorage 里的日志能到几百 KB，渲染和落库都很频繁，
+// 每次 JSON.parse 一遍会明显拖慢界面，这里读一次缓存住，写入时同步更新。
+let chatLogCache = { id: "", log: null };
+let chatIndexCache = null;
+
+function invalidateChatCaches() {
+  chatLogCache = { id: "", log: null };
+  chatIndexCache = null;
+}
+
 function getChatLogFor(id) {
+  if (chatLogCache.id === id && chatLogCache.log) return chatLogCache.log;
   const log = readJson(chatMessagesKey(id), []);
-  return Array.isArray(log) ? log : [];
+  const list = Array.isArray(log) ? log : [];
+  chatLogCache = { id, log: list };
+  return list;
 }
 
 function saveChatLog(log) {
   saveChatLogFor(getActiveChatId(), log);
 }
 
+// 写会话日志：localStorage 写满时逐级降级（先丢历史条目的排盘原文，再砍条数），
+// 保证「存不下」不会抛异常——落库是在流式回调里做的，抛出来会把本轮对话判成中断。
+function persistChatLog(id, log) {
+  const trimmed = log.slice(-CHAT_LOG_LIMIT);
+  const write = (payload) => {
+    try {
+      localStorage.setItem(chatMessagesKey(id), JSON.stringify(payload));
+      return true;
+    } catch (error) {
+      return false;
+    }
+  };
+  if (write(trimmed)) return trimmed;
+  const slim = trimmed.map((entry) => (entry.raw ? { ...entry, raw: undefined } : entry));
+  if (write(slim)) return slim;
+  for (const size of [40, 20, 10]) {
+    const cut = slim.slice(-size);
+    if (write(cut)) return cut;
+  }
+  return trimmed;
+}
+
 // 指定会话写入：生成中用户可能切到别的会话，落库要写回原来那段对话
 function saveChatLogFor(id, log) {
-  const trimmed = log.slice(-CHAT_LOG_LIMIT);
-  localStorage.setItem(chatMessagesKey(id), JSON.stringify(trimmed));
-  if (!trimmed.length) return;
+  const stored = persistChatLog(id, log);
+  chatLogCache = { id, log: stored };
+  if (!stored.length) return;
   const list = getChatIndex();
   const existing = list.find((item) => item.id === id);
   saveChatIndex([
     {
       id,
-      title: chatSessionTitle(trimmed),
-      createdAt: existing?.createdAt || trimmed[0]?.time || new Date().toISOString(),
-      updatedAt: trimmed[trimmed.length - 1]?.time || new Date().toISOString(),
-      count: trimmed.length,
+      title: chatSessionTitle(stored),
+      createdAt: existing?.createdAt || stored[0]?.time || new Date().toISOString(),
+      updatedAt: stored[stored.length - 1]?.time || new Date().toISOString(),
+      count: stored.length,
     },
     ...list.filter((item) => item.id !== id),
   ]);
@@ -1646,6 +1695,7 @@ function startNewChat() {
 
 function deleteChatSession(id) {
   localStorage.removeItem(chatMessagesKey(id));
+  if (chatLogCache.id === id) chatLogCache = { id: "", log: null };
   saveChatIndex(getChatIndex().filter((item) => item.id !== id));
   if (localStorage.getItem(CHAT_ACTIVE_KEY) === id) localStorage.removeItem(CHAT_ACTIVE_KEY);
 }
@@ -1950,11 +2000,26 @@ function retryChatTurn(entryId) {
   }
 }
 
+// 回到前台时补一次：只针对「生成期间熄过屏/切过后台、且连接被掐断」的那一轮。
+// 久置超过 AUTO_RETRY_WINDOW_MS 的不再自动跑，免得用户切回来时莫名其妙自己开始生成。
+function maybeAutoRetryInterrupted() {
+  if (chatBusy) return false;
+  const log = getChatLog();
+  const last = log[log.length - 1];
+  if (!last || last.role !== "assistant" || !last.interrupted || !last.autoRetry) return false;
+  const age = Date.now() - new Date(last.time || 0).getTime();
+  if (!Number.isFinite(age) || age > AUTO_RETRY_WINDOW_MS) return false;
+  retryChatTurn(last.id);
+  return true;
+}
+
 function renderChat() {
   const log = getChatLog();
   const live = chatTurn && chatTurn.chatId === getActiveChatId() ? liveTurnHtml() : "";
-  // 进行中的那一轮由 liveTurnHtml 画，别在记录里重复画一遍
-  const stream = log
+  // 进行中的那一轮由 liveTurnHtml 画，别在记录里重复画一遍；
+  // 长会话只画最近 CHAT_RENDER_LIMIT 条，更早的折叠掉，避免每次重绘都把整屏 markdown 重跑一遍
+  const visible = log.length > CHAT_RENDER_LIMIT ? log.slice(-CHAT_RENDER_LIMIT) : log;
+  const stream = visible
     .filter((entry) => !(chatTurn && entry.id === chatTurn.entryId))
     .map(renderChatMessage)
     .join("");
@@ -2473,6 +2538,8 @@ async function streamAgentReply(userText, turnId = "") {
     notices: [],
     hint: "正在理解你的问题…",
     typing: true,
+    // 这一轮生成期间是否熄过屏/切过后台：回来时若发现被掐断，据此决定要不要自动重试
+    sawHidden: false,
   };
   render();
   setChatComposerBusy(true);
@@ -2517,7 +2584,7 @@ async function streamAgentReply(userText, turnId = "") {
       schedulePaint();
       // 边生成边落库：熄屏/切后台被系统掐断时，用户至少能看到已生成的部分
       const now = Date.now();
-      if (now - lastPersist > 400) {
+      if (now - lastPersist > CHAT_PERSIST_INTERVAL_MS) {
         lastPersist = now;
         persistChatTurnPartial();
       }
@@ -2583,13 +2650,15 @@ async function streamAgentReply(userText, turnId = "") {
       removeChatEntry(chatTurn.entryId, chatTurn.chatId);
       return "relay-blocked";
     }
-    // 切后台/熄屏/切页面时连接被掐断会走到这里：保留已生成的部分，给一个「重新生成」
+    // 切后台/熄屏/切页面时连接被掐断会走到这里：保留已生成的部分，给一个「重新生成」；
+    // 若这一轮生成期间确实熄过屏/切过后台，标记 autoRetry，回到前台时自动补一次
     writeChatTurnEntry(
       chatTurn.entryId,
       {
         role: "assistant",
         content: chatTurn.buffer.trim(),
         interrupted: true,
+        autoRetry: Boolean(chatTurn.sawHidden),
         errorText: error.message,
         tools: chatTurn.tools.filter((tool) => tool.ok !== undefined),
         retryText: userText,
@@ -3763,6 +3832,8 @@ function importAllData(jsonText) {
       count++;
     }
   }
+  // 整包覆盖了 localStorage，内存缓存里的旧会话必须作废
+  invalidateChatCaches();
   return count;
 }
 
@@ -4535,6 +4606,8 @@ async function init() {
   syncKeyboardState();
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) {
+      // 这一轮生成期间熄过屏/切过后台：记下来，回前台若发现被掐断就自动补跑一次
+      if (chatTurn) chatTurn.sawHidden = true;
       // 熄屏/切后台前把已生成部分落地，避免中断丢数据
       persistChatTurnPartial();
       const active = getActiveProfile();
@@ -4547,8 +4620,8 @@ async function init() {
       return;
     }
     // 回到前台时留在当前页，仅刷新缓存状态（报告中断会显示可重试，不再强制跳首页）
-    // 对话生成中不重渲染，避免打断流式输出
-    if (!chatBusy) render();
+    // 对话生成中不重渲染，避免打断流式输出；若上一轮是被熄屏/切后台掐断的，自动补跑一次
+    if (!chatBusy && !maybeAutoRetryInterrupted()) render();
   });
 }
 
