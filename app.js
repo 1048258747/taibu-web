@@ -1984,6 +1984,7 @@ function renderChat() {
           </div>
         </div>
         ${renderChatSheet()}
+        ${renderVoiceOverlay()}
       </div>
     `,
     "chat",
@@ -2201,24 +2202,124 @@ function renderVoiceButton() {
   return `<button class="icon-button chat-voice-button" data-action="chat-voice" data-unsupported="${supported ? "" : "1"}" aria-label="${label}" title="${label}"${supported ? "" : " disabled"}>${VOICE_ICON}</button>`;
 }
 
+// 语音输入浮层：大号麦克风 + 扩散圆环 + 实时转写，替代原先只有一个会闪的小按钮
+function renderVoiceOverlay() {
+  const open = voiceListening ? " is-open" : "";
+  return `
+    <div class="voice-overlay${open}" data-voice-overlay aria-hidden="${voiceListening ? "false" : "true"}">
+      <div class="voice-panel" role="dialog" aria-modal="true" aria-label="语音输入">
+        <div class="voice-orb" aria-hidden="true">
+          <span class="voice-ring"></span>
+          <span class="voice-ring"></span>
+          <span class="voice-ring"></span>
+          <span class="voice-mic">${VOICE_ICON}</span>
+        </div>
+        <p class="voice-status" data-voice-status>正在聆听…</p>
+        <p class="voice-live is-empty" data-voice-live>请开始说话</p>
+        <div class="voice-actions">
+          <button class="secondary-button" data-action="voice-cancel">取消</button>
+          <button class="primary-button" data-action="voice-done">完成</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function setVoiceLiveText(text) {
+  const live = app.querySelector("[data-voice-live]");
+  if (!live) return;
+  const value = String(text || "").trim();
+  live.textContent = value || "请开始说话";
+  live.classList.toggle("is-empty", !value);
+}
+
 function applyVoiceText(text) {
   const input = app.querySelector("[data-chat-main]");
-  if (!input) return;
   const spoken = String(text || "").trim();
   const merged = `${voiceBaseText}${voiceBaseText && spoken ? " " : ""}${spoken}`.trim();
-  input.value = merged;
-  input.dispatchEvent(new Event("input"));
+  if (input) {
+    input.value = merged;
+    input.dispatchEvent(new Event("input"));
+  }
+  setVoiceLiveText(merged);
+}
+
+function resetVoiceOverlayControls(overlay) {
+  const cancel = overlay.querySelector('[data-action="voice-cancel"]');
+  const done = overlay.querySelector('[data-action="voice-done"]');
+  const status = overlay.querySelector("[data-voice-status]");
+  if (cancel) cancel.textContent = "取消";
+  if (done) done.classList.remove("is-hidden");
+  if (status) status.textContent = "正在聆听…";
 }
 
 function setVoiceListening(active) {
   voiceListening = active;
   const button = app.querySelector('[data-action="chat-voice"]');
   const input = app.querySelector("[data-chat-main]");
+  const overlay = app.querySelector("[data-voice-overlay]");
   if (button) {
     button.classList.toggle("is-listening", active);
     button.setAttribute("aria-pressed", String(active));
   }
-  if (input) input.placeholder = active ? "正在聆听…说完点一下麦克风" : CHAT_PLACEHOLDER;
+  if (input) input.placeholder = active ? "正在聆听…说完点「完成」" : CHAT_PLACEHOLDER;
+  if (overlay) {
+    overlay.classList.toggle("is-open", active);
+    overlay.classList.toggle("is-error", false);
+    overlay.setAttribute("aria-hidden", active ? "false" : "true");
+    if (active) {
+      resetVoiceOverlayControls(overlay);
+      setVoiceLiveText(voiceBaseText);
+    }
+  }
+}
+
+// 识别失败：在浮层里就地提示，比系统弹窗更接近「其他软件」的体验
+function showVoiceError(message) {
+  voiceListening = false;
+  const button = app.querySelector('[data-action="chat-voice"]');
+  const input = app.querySelector("[data-chat-main]");
+  const overlay = app.querySelector("[data-voice-overlay]");
+  if (button) {
+    button.classList.remove("is-listening");
+    button.setAttribute("aria-pressed", "false");
+  }
+  if (input) input.placeholder = CHAT_PLACEHOLDER;
+  const text = String(message || "语音识别失败，请重试。");
+  if (!overlay) {
+    window.alert(text);
+    return;
+  }
+  overlay.classList.add("is-open", "is-error");
+  overlay.setAttribute("aria-hidden", "false");
+  const status = overlay.querySelector("[data-voice-status]");
+  if (status) status.textContent = text;
+  const live = overlay.querySelector("[data-voice-live]");
+  if (live) {
+    live.textContent = "可以改用键盘输入";
+    live.classList.add("is-empty");
+  }
+  const cancel = overlay.querySelector('[data-action="voice-cancel"]');
+  const done = overlay.querySelector('[data-action="voice-done"]');
+  if (cancel) cancel.textContent = "关闭";
+  if (done) done.classList.add("is-hidden");
+}
+
+// 「取消」丢弃这次识别结果，恢复开始说话前输入框里的内容
+function cancelVoiceInput() {
+  stopVoiceInput();
+  const input = app.querySelector("[data-chat-main]");
+  if (input) {
+    input.value = voiceBaseText;
+    input.dispatchEvent(new Event("input"));
+  }
+}
+
+// 「完成」保留识别结果，把光标交回输入框方便继续编辑
+function finishVoiceInput() {
+  stopVoiceInput();
+  const input = app.querySelector("[data-chat-main]");
+  if (input) input.focus();
 }
 
 function stopVoiceInput() {
@@ -2255,15 +2356,14 @@ function startVoiceInput() {
     try {
       bridge.startVoiceInput();
     } catch (error) {
-      setVoiceListening(false);
-      window.alert(`语音输入启动失败：${error.message}`);
+      showVoiceError(`语音输入启动失败：${error.message}`);
     }
     return;
   }
 
   const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
   if (!Recognition) {
-    window.alert("当前环境不支持语音输入，请直接用键盘输入。");
+    showVoiceError("当前环境不支持语音输入，请直接用键盘输入。");
     return;
   }
 
@@ -2288,7 +2388,6 @@ function startVoiceInput() {
   };
   recognition.onerror = (event) => {
     voiceRecognition = null;
-    setVoiceListening(false);
     const reasons = {
       "not-allowed": "没有麦克风权限，请在浏览器设置里允许后重试。",
       "service-not-allowed": "浏览器未启用语音识别服务。",
@@ -2296,7 +2395,7 @@ function startVoiceInput() {
       "audio-capture": "没有检测到麦克风设备。",
       network: "语音识别需要联网，请检查网络后重试。",
     };
-    window.alert(reasons[event.error] || `语音识别失败：${event.error || "未知错误"}`);
+    showVoiceError(reasons[event.error] || `语音识别失败：${event.error || "未知错误"}`);
   };
   recognition.onend = () => {
     voiceRecognition = null;
@@ -2307,8 +2406,7 @@ function startVoiceInput() {
     recognition.start();
   } catch (error) {
     voiceRecognition = null;
-    setVoiceListening(false);
-    window.alert(`语音输入启动失败：${error.message}`);
+    showVoiceError(`语音输入启动失败：${error.message}`);
   }
 }
 
@@ -2320,10 +2418,7 @@ function initVoiceBridge() {
     setVoiceListening(false);
     applyVoiceText(text);
   };
-  window.__taibuVoiceError = (message) => {
-    setVoiceListening(false);
-    window.alert(String(message || "语音识别失败，请重试。"));
-  };
+  window.__taibuVoiceError = (message) => showVoiceError(String(message || "语音识别失败，请重试。"));
 }
 
 async function sendChatMessage(rawText) {
@@ -3894,7 +3989,7 @@ function renderMinePage() {
 
       <div class="section-heading"><h2>外观</h2></div>
       <section class="panel theme-panel">
-        <p>深色为默认主题，夜间更省眼；白天可切浅色。</p>
+        <p>默认跟随手机系统的深浅色，也可以固定成深色或浅色。</p>
         <div class="theme-switch" role="group" aria-label="主题模式">
           ${THEMES.map(
             (theme) => `
@@ -4097,6 +4192,7 @@ function render() {
   const toolName = segments[1] ? decodeURIComponent(segments[1]) : "";
 
   let content;
+  let onChatPage = false;
   if (first === "tool" && toolName) {
     content = renderToolForm(toolName);
   } else if (first === "result" && toolName) {
@@ -4113,7 +4209,11 @@ function render() {
     content = renderToolsPage();
   } else {
     content = renderChat();
+    onChatPage = true;
   }
+
+  // 离开对话页时收掉语音浮层，否则识别还在跑但界面已经切走
+  if (voiceListening && !onChatPage) stopVoiceInput();
 
   app.innerHTML = content;
   syncTopbarHeight();
@@ -4147,6 +4247,10 @@ function bindEvents() {
         window.location.hash = "#/tools";
       } else if (action === "chat-voice") {
         startVoiceInput();
+      } else if (action === "voice-cancel") {
+        cancelVoiceInput();
+      } else if (action === "voice-done") {
+        finishVoiceInput();
       } else if (action === "chat-send") {
         const input = app.querySelector("[data-chat-main]");
         const text = input?.value.trim() || "";
@@ -4405,6 +4509,19 @@ async function init() {
   document.documentElement.dataset.font = getFontScaleId();
   // 同步已保存主题（含 theme-color），首屏底色由 index.html 内联脚本先行落地
   applyTheme(getThemeId());
+  // 跟随系统模式下，系统深浅色切换要实时跟随（手机改主题、日落自动切换等）
+  const onSystemThemeChange = () => {
+    if (getThemeId() === "system") applyTheme("system");
+  };
+  // APK：原生在系统深浅色变化时回调（清单声明了 uiMode，不会重建 Activity）
+  window.__taibuSystemThemeChanged = onSystemThemeChange;
+  if (SYSTEM_DARK_QUERY) {
+    if (typeof SYSTEM_DARK_QUERY.addEventListener === "function") {
+      SYSTEM_DARK_QUERY.addEventListener("change", onSystemThemeChange);
+    } else if (typeof SYSTEM_DARK_QUERY.addListener === "function") {
+      SYSTEM_DARK_QUERY.addListener(onSystemThemeChange);
+    }
+  }
   document.addEventListener("click", (event) => {
     if (!event.target.closest(".font-menu-anchor")) closeFontMenu();
   });
@@ -4435,23 +4552,43 @@ async function init() {
   });
 }
 
-// 主题（深色默认 / 浅色可切）；首屏由 index.html 内联脚本先落地，避免闪白
+// 主题：跟随系统（默认）/ 深色 / 浅色；首屏由 index.html 内联脚本先落地，避免闪白
 const THEME_KEY = "taibu:theme";
 const THEMES = [
+  { id: "system", label: "跟随系统" },
   { id: "dark", label: "深色" },
   { id: "light", label: "浅色" },
 ];
+const SYSTEM_DARK_QUERY = window.matchMedia ? window.matchMedia("(prefers-color-scheme: dark)") : null;
 
+// 返回用户选择的模式（system / dark / light），没设置过视为跟随系统
 function getThemeId() {
   try {
-    return localStorage.getItem(THEME_KEY) === "light" ? "light" : "dark";
+    const saved = localStorage.getItem(THEME_KEY);
+    return saved === "light" || saved === "dark" ? saved : "system";
   } catch (error) {
-    return "dark";
+    return "system";
   }
 }
 
+// 把模式解析成实际配色：system 时读系统深浅色偏好
+function resolveThemeId(id) {
+  if (id === "light" || id === "dark") return id;
+  // APK：直接问原生。WebView 的 prefers-color-scheme 受 App 主题影响，未必等于系统设置
+  try {
+    const bridge = window.AndroidBridge;
+    if (bridge && typeof bridge.isSystemDark === "function") {
+      return bridge.isSystemDark() ? "dark" : "light";
+    }
+  } catch (error) {
+    // 桥调用失败退回媒体查询
+  }
+  return SYSTEM_DARK_QUERY && SYSTEM_DARK_QUERY.matches ? "dark" : "light";
+}
+
 function applyTheme(id) {
-  const theme = id === "light" ? "light" : "dark";
+  const mode = id === "light" || id === "dark" ? id : "system";
+  const theme = resolveThemeId(mode);
   document.documentElement.dataset.theme = theme;
   const bg = theme === "light" ? "#F4F6FA" : "#080B11";
   const meta = document.querySelector('meta[name="theme-color"]');
@@ -4463,7 +4600,7 @@ function applyTheme(id) {
     // 浏览器/PWA 没有这个桥接，忽略
   }
   try {
-    localStorage.setItem(THEME_KEY, theme);
+    localStorage.setItem(THEME_KEY, mode);
   } catch (error) {
     // 隐私模式下写入失败不影响本次切换
   }

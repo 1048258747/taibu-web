@@ -416,7 +416,7 @@ button:disabled {
 
 .theme-switch {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px;
   padding: 4px;
   background: var(--surface-2);
@@ -426,11 +426,12 @@ button:disabled {
 
 .theme-switch button {
   min-height: 42px;
+  padding: 0 6px;
   border: 1px solid transparent;
   border-radius: 6px;
   background: transparent;
   color: var(--ink-soft);
-  font-size: 15px;
+  font-size: 14px;
 }
 
 .theme-switch button:hover,
@@ -3231,7 +3232,7 @@ html[data-keyboard="on"] .chat-composer {
 }
 
 .chat-voice-button.is-listening {
-  background: var(--accent);
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
   color: var(--on-accent);
   animation: voice-pulse 1.3s ease-in-out infinite;
 }
@@ -3243,6 +3244,154 @@ html[data-keyboard="on"] .chat-composer {
   }
   50% {
     box-shadow: 0 0 0 7px rgba(var(--accent-rgb), 0);
+  }
+}
+
+/* ============================================================
+   语音输入浮层：大号麦克风 + 扩散圆环 + 实时转写
+   ============================================================ */
+.voice-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding: 0 12px calc(var(--kb-inset, 0px) + 92px);
+  background: rgba(var(--bg-deep-rgb), 0.5);
+  backdrop-filter: blur(7px);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s ease;
+}
+
+.voice-overlay.is-open {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.voice-panel {
+  width: 100%;
+  max-width: 420px;
+  padding: 22px 20px 18px;
+  border: 1px solid var(--line-strong);
+  border-radius: 20px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  text-align: center;
+  transform: translateY(18px) scale(0.97);
+  transition: transform 0.26s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.voice-overlay.is-open .voice-panel {
+  transform: none;
+}
+
+.voice-orb {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 104px;
+  height: 104px;
+  margin: 2px auto 14px;
+}
+
+.voice-ring {
+  position: absolute;
+  inset: 0;
+  border: 2px solid rgba(var(--accent-rgb), 0.55);
+  border-radius: 50%;
+  animation: voice-ring 2.4s ease-out infinite;
+}
+
+.voice-ring:nth-child(2) {
+  animation-delay: 0.8s;
+}
+
+.voice-ring:nth-child(3) {
+  animation-delay: 1.6s;
+}
+
+.voice-mic {
+  position: relative;
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  color: var(--on-accent);
+  box-shadow: 0 10px 26px rgba(var(--accent-rgb), 0.38);
+}
+
+.voice-mic svg {
+  width: 27px;
+  height: 27px;
+}
+
+.voice-status {
+  margin: 0 0 6px;
+  color: var(--accent);
+  font-size: 13px;
+  letter-spacing: 0.06em;
+}
+
+.voice-live {
+  margin: 0 0 18px;
+  min-height: 48px;
+  max-height: 132px;
+  overflow-y: auto;
+  color: var(--ink);
+  font-size: 17px;
+  line-height: 1.6;
+  word-break: break-word;
+}
+
+.voice-live.is-empty {
+  color: var(--muted);
+  font-size: 15px;
+}
+
+.voice-actions {
+  display: flex;
+  gap: 10px;
+}
+
+.voice-actions button {
+  flex: 1;
+  min-height: 44px;
+  border-radius: 999px;
+}
+
+/* 识别失败：停掉扩散动画，状态文案转为告警色 */
+.voice-overlay.is-error .voice-ring {
+  animation: none;
+  opacity: 0;
+}
+
+.voice-overlay.is-error .voice-mic {
+  background: linear-gradient(135deg, var(--danger), var(--accent-2));
+  box-shadow: 0 10px 26px rgba(var(--shadow-rgb), 0.28);
+}
+
+.voice-overlay.is-error .voice-status {
+  color: var(--danger);
+  letter-spacing: 0;
+  line-height: 1.5;
+}
+
+@keyframes voice-ring {
+  0% {
+    transform: scale(0.58);
+    opacity: 0.9;
+  }
+  75% {
+    opacity: 0;
+  }
+  100% {
+    transform: scale(1);
+    opacity: 0;
   }
 }
 
