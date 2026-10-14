@@ -2241,8 +2241,16 @@ const VOICE_ICON =
 const CHAT_PLACEHOLDER = "说点什么，例如：帮我看看今天的运势";
 
 let voiceListening = false;
+// 按住说话：true 表示麦克风按钮仍被按住，静音断句后要自动接着听，直到用户松手
+let voiceHolding = false;
 let voiceRecognition = null;
 let voiceBaseText = "";
+// 本次按住期间已定稿（final）的识别文本：会话可能被静音中断后重开，文字要跨段累积
+let voiceSettled = "";
+// 一次按住最多重开几段，防止设备一直静音时空转
+let voiceRestartCount = 0;
+const VOICE_MAX_RESTARTS = 15;
+const VOICE_LISTENING_HINT = "正在聆听…松开手指结束";
 
 function nativeVoiceBridge() {
   const bridge = window.AndroidBridge;
@@ -2279,11 +2287,10 @@ function renderVoiceOverlay() {
           <span class="voice-ring"></span>
           <span class="voice-mic">${VOICE_ICON}</span>
         </div>
-        <p class="voice-status" data-voice-status>正在聆听…</p>
-        <p class="voice-live is-empty" data-voice-live>请开始说话</p>
+        <p class="voice-status" data-voice-status>${VOICE_LISTENING_HINT}</p>
+        <p class="voice-live is-empty" data-voice-live>按下说话，松开结束</p>
         <div class="voice-actions">
           <button class="secondary-button" data-action="voice-cancel">取消</button>
-          <button class="primary-button" data-action="voice-done">完成</button>
         </div>
       </div>
     </div>
@@ -2294,7 +2301,7 @@ function setVoiceLiveText(text) {
   const live = app.querySelector("[data-voice-live]");
   if (!live) return;
   const value = String(text || "").trim();
-  live.textContent = value || "请开始说话";
+  live.textContent = value || "按下说话，松开结束";
   live.classList.toggle("is-empty", !value);
 }
 
@@ -2311,14 +2318,13 @@ function applyVoiceText(text) {
 
 function resetVoiceOverlayControls(overlay) {
   const cancel = overlay.querySelector('[data-action="voice-cancel"]');
-  const done = overlay.querySelector('[data-action="voice-done"]');
   const status = overlay.querySelector("[data-voice-status]");
   if (cancel) cancel.textContent = "取消";
-  if (done) done.classList.remove("is-hidden");
-  if (status) status.textContent = "正在聆听…";
+  if (status) status.textContent = VOICE_LISTENING_HINT;
 }
 
 function setVoiceListening(active) {
+  const wasActive = voiceListening;
   voiceListening = active;
   const button = app.querySelector('[data-action="chat-voice"]');
   const input = app.querySelector("[data-chat-main]");
@@ -2327,12 +2333,14 @@ function setVoiceListening(active) {
     button.classList.toggle("is-listening", active);
     button.setAttribute("aria-pressed", String(active));
   }
-  if (input) input.placeholder = active ? "正在聆听…说完点「完成」" : CHAT_PLACEHOLDER;
+  if (input) input.placeholder = active ? VOICE_LISTENING_HINT : CHAT_PLACEHOLDER;
   if (overlay) {
     overlay.classList.toggle("is-open", active);
     overlay.classList.toggle("is-error", false);
     overlay.setAttribute("aria-hidden", active ? "false" : "true");
-    if (active) {
+    // 只在真正开始聆听时初始化一次：按住期间会静音重开新的一段，
+    // 每次都重置会把已经识别出来的文字擦掉。
+    if (active && !wasActive) {
       resetVoiceOverlayControls(overlay);
       setVoiceLiveText(voiceBaseText);
     }
@@ -2342,6 +2350,7 @@ function setVoiceListening(active) {
 // 识别失败：在浮层里就地提示，比系统弹窗更接近「其他软件」的体验
 function showVoiceError(message) {
   voiceListening = false;
+  voiceHolding = false;
   const button = app.querySelector('[data-action="chat-voice"]');
   const input = app.querySelector("[data-chat-main]");
   const overlay = app.querySelector("[data-voice-overlay]");
@@ -2365,9 +2374,7 @@ function showVoiceError(message) {
     live.classList.add("is-empty");
   }
   const cancel = overlay.querySelector('[data-action="voice-cancel"]');
-  const done = overlay.querySelector('[data-action="voice-done"]');
   if (cancel) cancel.textContent = "关闭";
-  if (done) done.classList.add("is-hidden");
 }
 
 // 「取消」丢弃这次识别结果，恢复开始说话前输入框里的内容
@@ -2380,16 +2387,16 @@ function cancelVoiceInput() {
   }
 }
 
-// 「完成」保留识别结果，把光标交回输入框方便继续编辑
+// 松开手指 = 结束本次语音输入，识别结果保留在输入框里（不再需要「完成」按钮）
 function finishVoiceInput() {
   stopVoiceInput();
-  const input = app.querySelector("[data-chat-main]");
-  if (input) input.focus();
 }
 
 function stopVoiceInput() {
+  voiceHolding = false;
   if (voiceRecognition) {
     try {
+      // 必须用 stop()：它会先把最后一段结果交出来再结束会话；abort() 会直接丢字
       voiceRecognition.stop();
     } catch (error) {
       // 已结束的识别再 stop 会抛异常，忽略即可。
@@ -2407,13 +2414,14 @@ function stopVoiceInput() {
   setVoiceListening(false);
 }
 
+// 按住说话：按下开始，松手结束。已经有一段在听就不重复开。
 function startVoiceInput() {
-  if (voiceListening) {
-    stopVoiceInput();
-    return;
-  }
+  if (voiceListening || voiceHolding) return;
   const input = app.querySelector("[data-chat-main]");
   voiceBaseText = input ? input.value.trim() : "";
+  voiceSettled = "";
+  voiceRestartCount = 0;
+  voiceHolding = true;
 
   const bridge = nativeVoiceBridge();
   if (bridge) {
@@ -2421,13 +2429,24 @@ function startVoiceInput() {
     try {
       bridge.startVoiceInput();
     } catch (error) {
+      voiceHolding = false;
       showVoiceError(`语音输入启动失败：${error.message}`);
     }
     return;
   }
 
+  setVoiceListening(true);
+  startWebRecognition();
+}
+
+// 浏览器 / PWA 走 Web Speech API。
+// continuous 必须为 true：默认的 false 模式下稍微停顿一句就结束会话——用户反馈的
+// 「一停就断」正是这个原因。连续模式下停顿只切分句子，会话不会结束；
+// 万一还是被静音掐断，只要手指没松就再开一段接着听。
+function startWebRecognition() {
   const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
   if (!Recognition) {
+    voiceHolding = false;
     showVoiceError("当前环境不支持语音输入，请直接用键盘输入。");
     return;
   }
@@ -2435,24 +2454,47 @@ function startVoiceInput() {
   const recognition = new Recognition();
   voiceRecognition = recognition;
   recognition.lang = "zh-CN";
-  recognition.continuous = false;
+  recognition.continuous = true;
   recognition.interimResults = true;
   recognition.maxAlternatives = 1;
 
-  let settled = "";
+  // 上一段实例要完全释放后才能再 start()，否则抛 InvalidStateError，所以延迟一点重开
+  const restart = () => {
+    if (voiceRestartCount >= VOICE_MAX_RESTARTS) {
+      stopVoiceInput();
+      return;
+    }
+    voiceRestartCount += 1;
+    window.setTimeout(() => {
+      if (!voiceHolding) return;
+      try {
+        startWebRecognition();
+      } catch (error) {
+        voiceHolding = false;
+        showVoiceError(`语音输入启动失败：${error.message}`);
+      }
+    }, 120);
+  };
+
   recognition.onstart = () => setVoiceListening(true);
   recognition.onresult = (event) => {
     let interim = "";
     for (let i = event.resultIndex; i < event.results.length; i += 1) {
       const result = event.results[i];
       const transcript = result[0] ? result[0].transcript : "";
-      if (result.isFinal) settled += transcript;
+      if (result.isFinal) voiceSettled += transcript;
       else interim += transcript;
     }
-    applyVoiceText(`${settled}${interim}`);
+    applyVoiceText(`${voiceSettled}${interim}`);
   };
   recognition.onerror = (event) => {
     voiceRecognition = null;
+    // 「没听到声音」是静音判定而不是真的出错：手没松就换一段接着听
+    if (voiceHolding && event.error === "no-speech") {
+      restart();
+      return;
+    }
+    voiceHolding = false;
     const reasons = {
       "not-allowed": "没有麦克风权限，请在浏览器设置里允许后重试。",
       "service-not-allowed": "浏览器未启用语音识别服务。",
@@ -2464,6 +2506,10 @@ function startVoiceInput() {
   };
   recognition.onend = () => {
     voiceRecognition = null;
+    if (voiceHolding) {
+      restart();
+      return;
+    }
     setVoiceListening(false);
   };
 
@@ -2471,8 +2517,53 @@ function startVoiceInput() {
     recognition.start();
   } catch (error) {
     voiceRecognition = null;
+    voiceHolding = false;
     showVoiceError(`语音输入启动失败：${error.message}`);
   }
+}
+
+// 麦克风按钮绑定「按住说话」。
+// 用 pointer 事件而不是 click：click 要等手指抬起才触发，表达不了「按住这段时间」。
+// 再配合 setPointerCapture，浮层盖住按钮后仍能收到 pointerup——否则松手事件会被浮层吃掉，
+// 表现为「松手了但还在听」。
+function bindVoiceHold() {
+  const button = app.querySelector('[data-action="chat-voice"]');
+  if (!button || button.dataset.voiceBound === "1") return;
+  button.dataset.voiceBound = "1";
+
+  const release = (event) => {
+    try {
+      button.releasePointerCapture(event.pointerId);
+    } catch (error) {
+      // 未捕获指针时释放会抛异常，忽略。
+    }
+    if (voiceHolding) finishVoiceInput();
+  };
+
+  button.addEventListener("pointerdown", (event) => {
+    if (button.disabled) return;
+    event.preventDefault();
+    try {
+      button.setPointerCapture(event.pointerId);
+    } catch (error) {
+      // 忽略。
+    }
+    startVoiceInput();
+  });
+  button.addEventListener("pointerup", release);
+  button.addEventListener("pointercancel", release);
+
+  // 键盘可达性：回车 / 空格按下开始，松开结束
+  button.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" && event.key !== " ") return;
+    event.preventDefault();
+    startVoiceInput();
+  });
+  button.addEventListener("keyup", (event) => {
+    if (event.key !== "Enter" && event.key !== " ") return;
+    event.preventDefault();
+    if (voiceHolding) finishVoiceInput();
+  });
 }
 
 // 安卓壳通过原生 SpeechRecognizer 识别，再回调到这里（浏览器环境不注册）
@@ -4289,6 +4380,8 @@ function render() {
   app.innerHTML = content;
   syncTopbarHeight();
   bindEvents();
+  // 麦克风按钮是「按住说话」，需要单独绑 pointer 事件（点击委托表达不了按住这段时间）
+  bindVoiceHold();
   // 生成中重绘（如免费额度刷新）会把输入区恢复成可点状态，这里补回来
   if (chatBusy) setChatComposerBusy(true);
   if (first === "tool" && toolName) {
@@ -4316,12 +4409,8 @@ function bindEvents() {
         window.location.hash = "#/";
       } else if (action === "tools") {
         window.location.hash = "#/tools";
-      } else if (action === "chat-voice") {
-        startVoiceInput();
       } else if (action === "voice-cancel") {
         cancelVoiceInput();
-      } else if (action === "voice-done") {
-        finishVoiceInput();
       } else if (action === "chat-send") {
         const input = app.querySelector("[data-chat-main]");
         const text = input?.value.trim() || "";

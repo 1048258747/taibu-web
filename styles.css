@@ -3220,6 +3220,11 @@ html[data-keyboard="on"] .chat-composer {
   background: var(--accent-2-soft);
   color: var(--accent-2);
   transition: background 0.15s ease, color 0.15s ease;
+  /* 按住说话：这一块不响应滚动/长按选中，否则按住时会被判成滑动手势而中断 */
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
 }
 
 .chat-voice-button:hover:not(:disabled) {
@@ -3255,9 +3260,12 @@ html[data-keyboard="on"] .chat-composer {
   inset: 0;
   z-index: 70;
   display: flex;
-  align-items: flex-end;
+  /* 按住说话时手指压在底部输入区的麦克风上：浮层如果贴底会被手掌挡住，
+     所以整体抬到屏幕偏上的位置，转写文字始终看得见 */
+  align-items: center;
   justify-content: center;
-  padding: 0 12px calc(var(--kb-inset, 0px) + 92px);
+  padding: 0 16px 22vh;
+  overflow-y: auto;
   background: rgba(var(--bg-deep-rgb), 0.5);
   backdrop-filter: blur(7px);
   opacity: 0;
@@ -3291,8 +3299,8 @@ html[data-keyboard="on"] .chat-composer {
   position: relative;
   display: grid;
   place-items: center;
-  width: 104px;
-  height: 104px;
+  width: 94px;
+  height: 94px;
   margin: 2px auto 14px;
 }
 
@@ -3317,8 +3325,8 @@ html[data-keyboard="on"] .chat-composer {
   z-index: 2;
   display: grid;
   place-items: center;
-  width: 64px;
-  height: 64px;
+  width: 58px;
+  height: 58px;
   border-radius: 50%;
   background: linear-gradient(135deg, var(--accent), var(--accent-2));
   color: var(--on-accent);
@@ -3326,25 +3334,27 @@ html[data-keyboard="on"] .chat-composer {
 }
 
 .voice-mic svg {
-  width: 27px;
-  height: 27px;
+  width: 25px;
+  height: 25px;
 }
 
+/* 状态行承载「松开手指结束」这条关键提示，比原来 13px 更醒目 */
 .voice-status {
-  margin: 0 0 6px;
+  margin: 0 0 10px;
   color: var(--accent);
-  font-size: 13px;
-  letter-spacing: 0.06em;
+  font-size: 15px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
 }
 
 .voice-live {
-  margin: 0 0 18px;
-  min-height: 48px;
-  max-height: 132px;
+  margin: 0 0 20px;
+  min-height: 52px;
+  max-height: 150px;
   overflow-y: auto;
   color: var(--ink);
-  font-size: 17px;
-  line-height: 1.6;
+  font-size: 18px;
+  line-height: 1.65;
   word-break: break-word;
 }
 
@@ -3355,12 +3365,15 @@ html[data-keyboard="on"] .chat-composer {
 
 .voice-actions {
   display: flex;
+  justify-content: center;
   gap: 10px;
 }
 
+/* 按住说话后只剩「取消」一个按钮，撑满整行像主操作按钮，居中收成一颗胶囊更自然 */
 .voice-actions button {
-  flex: 1;
-  min-height: 44px;
+  min-width: 140px;
+  min-height: 42px;
+  padding: 0 24px;
   border-radius: 999px;
 }
 
