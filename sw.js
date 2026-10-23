@@ -1,5 +1,5 @@
 // 赛博玄学 Service Worker：缓存应用外壳，支持离线使用
-const CACHE = "taibu-v29";
+const CACHE = "taibu-v31";
 const ASSETS = [
   "./",
   "./index.html",

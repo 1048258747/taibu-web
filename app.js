@@ -2043,7 +2043,7 @@ function renderChat() {
         <div class="chat-composer">
           <div class="chat-input-row">
             <button class="icon-button chat-tool-button" data-action="chat-sheet" aria-label="快捷开始：推荐问句与排盘工具">术</button>
-            <textarea data-chat-main rows="1" placeholder="说点什么，例如：帮我看看今天的运势"></textarea>
+            <textarea data-chat-main rows="1" placeholder="说点什么…"></textarea>
             ${renderVoiceButton()}
             <button class="primary-button" data-action="chat-send">发送</button>
           </div>
@@ -2238,7 +2238,7 @@ function setChatComposerBusy(busy) {
 
 const VOICE_ICON =
   '<svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="2.5" width="6" height="11" rx="3"></rect><path d="M5 11a7 7 0 0 0 14 0"></path><path d="M12 18v3.5"></path></svg>';
-const CHAT_PLACEHOLDER = "说点什么，例如：帮我看看今天的运势";
+const CHAT_PLACEHOLDER = "说点什么…";
 
 let voiceListening = false;
 // 按住说话：true 表示麦克风按钮仍被按住，静音断句后要自动接着听，直到用户松手
@@ -2566,9 +2566,14 @@ function bindVoiceHold() {
   });
 }
 
-// 安卓壳通过原生 SpeechRecognizer 识别，再回调到这里（浏览器环境不注册）
+// 安卓壳通过本地 Vosk 模型识别，再回调到这里（浏览器环境不注册）
 function initVoiceBridge() {
   window.__taibuVoiceState = (state) => setVoiceListening(state === "listening");
+  // 准备模型 / 收尾识别时的临时状态文案，浮层保持打开
+  window.__taibuVoiceStatus = (text) => {
+    const status = app.querySelector("[data-voice-status]");
+    if (status) status.textContent = String(text || "");
+  };
   window.__taibuVoicePartial = (text) => applyVoiceText(text);
   window.__taibuVoiceResult = (text) => {
     setVoiceListening(false);
