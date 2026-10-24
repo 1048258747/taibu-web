@@ -4877,7 +4877,7 @@ function initUpdateCheck() {
         const version = data.versionName ? `v${data.versionName}` : `v${data.versionCode}`;
         const notes = data.notes || "修复了一些问题，建议更新。";
         if (window.confirm(`发现新版本 ${version}\n\n${notes}\n\n是否立即下载并安装？`)) {
-          window.AndroidBridge.downloadAndInstall(data.url);
+          window.AndroidBridge.downloadAndInstall(data.url, data.sha256 || "");
         }
       } else if (manual) {
         window.alert(`当前已是最新版本 v${window.AndroidBridge.getVersionName()}。`);
